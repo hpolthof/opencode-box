@@ -31,3 +31,10 @@ CREATE TABLE IF NOT EXISTS requests (
 CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_api_key_id ON requests(api_key_id);
 CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model);
+
+-- Small key/value store for admin-configurable settings (e.g. log retention)
+-- that need to survive restarts but don't warrant their own table/env var.
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

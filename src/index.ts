@@ -2,12 +2,14 @@ import { CONFIG } from "./config";
 import { startOpenCode } from "./opencode/process";
 import { app } from "./app";
 import { websocket } from "./routes/admin/terminal";
+import { startRetentionJob } from "./db/retentionJob";
 // Imported for its side effect: ensures CONFIG.dbPath's parent directory
 // exists and the schema is applied before we start accepting traffic.
 import "./db/client";
 
 async function main() {
   const opencode = await startOpenCode();
+  const retentionJob = startRetentionJob();
 
   const server = Bun.serve({
     port: CONFIG.port,
@@ -22,6 +24,7 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log("Shutting down...");
+    retentionJob.stop();
     opencode.stop();
     server.stop();
     process.exit(0);

@@ -145,6 +145,110 @@ export function usageByApp(sinceToday = false): AppUsage[] {
     .all();
 }
 
+export function countAllRequests(): number {
+  const row = db.query<{ n: number }, []>("SELECT COUNT(*) as n FROM requests").get();
+  return row?.n ?? 0;
+}
+
+export function oldestRequestDate(): string | null {
+  const row = db.query<{ createdAt: string }, []>("SELECT created_at as createdAt FROM requests ORDER BY created_at ASC LIMIT 1").get();
+  return row?.createdAt ?? null;
+}
+
+export function countRequestsOlderThan(days: number): number {
+  const row = db
+    .query<{ n: number }, [string]>(`SELECT COUNT(*) as n FROM requests WHERE created_at < datetime('now', ?)`)
+    .get(`-${days} days`);
+  return row?.n ?? 0;
+}
+
+/** Deletes request log rows older than `days`. Returns the number of rows deleted. */
+export function purgeRequestsOlderThan(days: number): number {
+  const count = countRequestsOlderThan(days);
+  if (count > 0) {
+    db.query(`DELETE FROM requests WHERE created_at < datetime('now', ?)`).run(`-${days} days`);
+  }
+  return count;
+}
+
+/** Deletes every request log row. Returns the number of rows deleted. */
+export function purgeAllRequests(): number {
+  const count = countAllRequests();
+  if (count > 0) {
+    db.exec("DELETE FROM requests");
+  }
+  return count;
+}
+
+const HAS_BODY_CLAUSE = "(request_body IS NOT NULL OR response_body IS NOT NULL)";
+
+export function countRequestsWithBodiesOlderThan(days: number): number {
+  const row = db
+    .query<{ n: number }, [string]>(`SELECT COUNT(*) as n FROM requests WHERE created_at < datetime('now', ?) AND ${HAS_BODY_CLAUSE}`)
+    .get(`-${days} days`);
+  return row?.n ?? 0;
+}
+
+/**
+ * "Soft" purge: clears the (heavy) request/response body columns on rows
+ * older than `days` but keeps the row itself, so dashboard stats (token
+ * counts, latency, model/app usage) stay accurate forever. Returns the
+ * number of rows affected.
+ */
+export function softPurgeRequestsOlderThan(days: number): number {
+  const count = countRequestsWithBodiesOlderThan(days);
+  if (count > 0) {
+    db.query(`UPDATE requests SET request_body = NULL, response_body = NULL WHERE created_at < datetime('now', ?) AND ${HAS_BODY_CLAUSE}`).run(
+      `-${days} days`
+    );
+  }
+  return count;
+}
+
+/** Soft purge (see {@link softPurgeRequestsOlderThan}) applied to every row, regardless of age. */
+export function softPurgeAllRequests(): number {
+  const row = db.query<{ n: number }, []>(`SELECT COUNT(*) as n FROM requests WHERE ${HAS_BODY_CLAUSE}`).get();
+  const count = row?.n ?? 0;
+  if (count > 0) {
+    db.exec(`UPDATE requests SET request_body = NULL, response_body = NULL WHERE ${HAS_BODY_CLAUSE}`);
+  }
+  return count;
+}
+
+/** Renders the full request log as CSV (RFC 4198-ish: quote-on-demand, doubled quotes). */
+export function exportRequestsCsv(): string {
+  const columns = [
+    "id",
+    "created_at",
+    "api_key_id",
+    "app_name",
+    "model",
+    "variant",
+    "stream",
+    "status",
+    "http_status",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "latency_ms",
+    "error_message",
+  ] as const;
+
+  const escape = (value: unknown): string => {
+    if (value == null) return "";
+    const str = String(value);
+    return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+  };
+
+  const rows = db.query<Record<(typeof columns)[number], unknown>, []>(`SELECT ${columns.join(", ")} FROM requests ORDER BY created_at ASC`).all();
+
+  const lines = [columns.join(",")];
+  for (const row of rows) {
+    lines.push(columns.map((col) => escape(row[col])).join(","));
+  }
+  return lines.join("\n");
+}
+
 export function totals(): { requestsToday: number; requestsTotal: number; tokensToday: number; tokensTotal: number } {
   const today = db
     .query<{ n: number; tok: number | null }, []>(

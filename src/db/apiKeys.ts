@@ -66,3 +66,19 @@ export function revokeKey(id: number): void {
 export function touchLastUsed(id: number): void {
   db.query("UPDATE api_keys SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(id);
 }
+
+export function countRevokedKeysOlderThan(days: number): number {
+  const row = db
+    .query<{ n: number }, [string]>(`SELECT COUNT(*) as n FROM api_keys WHERE revoked_at IS NOT NULL AND revoked_at < datetime('now', ?)`)
+    .get(`-${days} days`);
+  return row?.n ?? 0;
+}
+
+/** Deletes revoked keys older than `days`. Historic request log rows keep their own data; `api_key_id` is nulled out. */
+export function purgeRevokedKeysOlderThan(days: number): number {
+  const count = countRevokedKeysOlderThan(days);
+  if (count > 0) {
+    db.query(`DELETE FROM api_keys WHERE revoked_at IS NOT NULL AND revoked_at < datetime('now', ?)`).run(`-${days} days`);
+  }
+  return count;
+}

@@ -1,5 +1,5 @@
 import type { FC } from "hono/jsx";
-import { BASE_STYLES, Logo } from "./theme";
+import { BASE_STYLES, FAVICON_HREF, Logo } from "./theme";
 
 export const Login: FC<{ error?: string }> = ({ error }) => {
   return (
@@ -8,6 +8,7 @@ export const Login: FC<{ error?: string }> = ({ error }) => {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Login · opencode-box admin</title>
+        <link rel="icon" href={FAVICON_HREF} />
         <style dangerouslySetInnerHTML={{ __html: BASE_STYLES }}></style>
       </head>
       <body>

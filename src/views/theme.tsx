@@ -1,5 +1,19 @@
 import type { FC, PropsWithChildren } from "hono/jsx";
 
+// Same badge as <Logo>'s brand-badge (gradient square, "OB" mark), rendered
+// once at module load and reused as the browser tab favicon.
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0a93c"/>
+      <stop offset="1" stop-color="#c97f1f"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="url(#g)"/>
+  <text x="16" y="21.5" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="13" font-weight="700" letter-spacing="-0.5" fill="#17120a" text-anchor="middle">OB</text>
+</svg>`;
+export const FAVICON_HREF = `data:image/svg+xml;base64,${Buffer.from(FAVICON_SVG).toString("base64")}`;
+
 export const Logo: FC<{ href?: string }> = ({ href = "/admin" }) => (
   <a href={href} class="brand">
     <span class="brand-badge">OB</span>

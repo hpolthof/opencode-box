@@ -23,7 +23,9 @@ terminalRouter.get(
 
         session.onData((chunk) => {
           try {
-            ws.send(chunk);
+            // Bun's WSContext.send() is typed for a buffer-backed Uint8Array;
+            // proc.stdout chunks are only known as ArrayBufferLike.
+            ws.send(new Uint8Array(chunk));
           } catch {
             // Socket already closed - the exit handler below will clean up.
           }

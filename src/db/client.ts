@@ -10,6 +10,10 @@ mkdirSync(dirname(CONFIG.dbPath), { recursive: true });
 
 export const db = new Database(CONFIG.dbPath, { create: true });
 db.exec("PRAGMA journal_mode = WAL;");
+// Without this, `requests.api_key_id`'s `ON DELETE SET NULL` (schema.sql) is
+// inert - SQLite ignores declared foreign keys unless this is turned on -
+// and purging a revoked API key would leave orphaned ids in `requests`.
+db.exec("PRAGMA foreign_keys = ON;");
 db.exec(schemaSql);
 
 // Lightweight migration: `CREATE TABLE IF NOT EXISTS` above never touches an

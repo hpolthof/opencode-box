@@ -104,6 +104,12 @@ curl http://localhost:8080/v1/chat/completions \
 - **Providers** - status of the providers OpenCode currently has configured.
 - **Terminal** - a full interactive shell inside the container, in the browser. Same trust level as
   `docker exec -it <container> bash` - anyone with the admin password can run arbitrary commands.
+- **Maintenance** - keeps the gateway's own SQLite database from growing unbounded: purge request
+  logs (by age or all at once), purge old revoked API keys, set a retention period so purging runs
+  automatically every hour, vacuum the database to reclaim disk space, and export the request log
+  as CSV before purging. Both the automatic and manual purge have a "soft purge" checkbox that
+  clears just the stored request/response bodies instead of deleting the row, so token/latency/model
+  stats stay intact forever while the bulk of the storage (the bodies) still gets freed.
 
 ## v1 limitations
 
