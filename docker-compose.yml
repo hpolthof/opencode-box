@@ -1,0 +1,18 @@
+services:
+  opencode-box:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET}
+      PORT: "8080"
+      DB_PATH: /data/opencode-box.sqlite
+      OPENCODE_HOME: /data/opencode-home
+      TERMINAL_SHELL: ${TERMINAL_SHELL:-/bin/bash}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
