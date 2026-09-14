@@ -192,15 +192,29 @@ const SCRIPT = `
     return raw;
   }
 
+  // If the reply's extracted text is itself a JSON document (models
+  // sometimes return structured output as a JSON string), parse it so it
+  // can be shown as a collapsible tree instead of an unformatted blob under
+  // Markdown. Returns undefined when there's nothing JSON-shaped to show.
+  function parseContentJson(raw) {
+    try {
+      var parsed = JSON.parse(extractResponseText(raw));
+      if (parsed !== null && typeof parsed === "object") return parsed;
+    } catch (e) {}
+    return undefined;
+  }
+
   function formatPanel(panel, format) {
     var raw = panel.getAttribute("data-raw") || "";
     var codeEl = panel.querySelector(".detail-code");
     var jsonEl = panel.querySelector(".detail-json");
     var mdEl = panel.querySelector(".detail-markdown");
+    var contentJsonEl = panel.querySelector(".detail-content-json");
 
     codeEl.hidden = true;
     if (jsonEl) jsonEl.hidden = true;
     if (mdEl) mdEl.hidden = true;
+    if (contentJsonEl) contentJsonEl.hidden = true;
 
     if (format === "markdown" && mdEl) {
       mdEl.hidden = false;
@@ -219,8 +233,79 @@ const SCRIPT = `
       return;
     }
 
+    if (format === "content-json" && contentJsonEl) {
+      var parsedContent = parseContentJson(raw);
+      if (parsedContent !== undefined) {
+        contentJsonEl.innerHTML = renderJsonNode(parsedContent);
+        contentJsonEl.hidden = false;
+      } else {
+        codeEl.hidden = false;
+        codeEl.textContent = raw + "\\n\\n(response content is not valid JSON)";
+      }
+      return;
+    }
+
     codeEl.hidden = false;
     codeEl.textContent = raw;
+  }
+
+  // Text to put on the clipboard for whichever format is currently active -
+  // the pretty-printed JSON for the JSON tabs, the plain extracted reply
+  // text for Markdown, the untouched body for Raw.
+  function copyTextFor(panel, format, raw) {
+    if (format === "json") {
+      try {
+        return JSON.stringify(JSON.parse(raw), null, 2);
+      } catch (e) {
+        return raw;
+      }
+    }
+    if (format === "markdown") return extractResponseText(raw);
+    if (format === "content-json") {
+      var parsedContent = parseContentJson(raw);
+      if (parsedContent !== undefined) return JSON.stringify(parsedContent, null, 2);
+      return raw;
+    }
+    return raw;
+  }
+
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function copyToClipboard(text, btn) {
+    function done(ok) {
+      var label = btn.getAttribute("data-label") || btn.textContent;
+      btn.setAttribute("data-label", label);
+      btn.textContent = ok ? "Copied!" : "Copy failed";
+      btn.classList.toggle("copied", ok);
+      setTimeout(function () {
+        btn.textContent = btn.getAttribute("data-label");
+        btn.classList.remove("copied");
+      }, 1400);
+    }
+
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(
+        function () { done(true); },
+        function () { done(fallbackCopy(text)); }
+      );
+      return;
+    }
+    done(fallbackCopy(text));
   }
 
   table.addEventListener("click", function (e) {
@@ -232,6 +317,16 @@ const SCRIPT = `
         var open = collapse.classList.toggle("open");
         toggle.textContent = open ? "hide" : "view";
       }
+      return;
+    }
+
+    var copyBtn = e.target.closest(".detail-copy");
+    if (copyBtn) {
+      var copyPanel = copyBtn.closest(".detail-panel");
+      var activeTab = copyPanel.querySelector(".detail-tab.active");
+      var format = activeTab ? activeTab.getAttribute("data-format") : "raw";
+      var raw = copyPanel.getAttribute("data-raw") || "";
+      copyToClipboard(copyTextFor(copyPanel, format, raw), copyBtn);
       return;
     }
 
@@ -247,7 +342,12 @@ const SCRIPT = `
   });
 
   Array.prototype.forEach.call(table.querySelectorAll(".detail-panel"), function (panel) {
-    panel.querySelector(".detail-code").textContent = panel.getAttribute("data-raw") || "";
+    var raw = panel.getAttribute("data-raw") || "";
+    panel.querySelector(".detail-code").textContent = raw;
+    var contentJsonTab = panel.querySelector('.detail-tab[data-format="content-json"]');
+    if (contentJsonTab) {
+      contentJsonTab.disabled = parseContentJson(raw) === undefined;
+    }
   });
 })();
 `;
@@ -387,12 +487,17 @@ export const RequestsLog: FC<RequestsLogProps> = ({ rows, total, pageSize, filte
 
                           <div class="detail-panel" data-raw={row.requestBody ?? ""}>
                             <div class="detail-panel-label">Request body</div>
-                            <div class="detail-tabs">
-                              <button type="button" class="detail-tab active" data-format="raw">
-                                Raw
-                              </button>
-                              <button type="button" class="detail-tab" data-format="json">
-                                Formatted JSON
+                            <div class="detail-tabbar">
+                              <div class="detail-tabs">
+                                <button type="button" class="detail-tab active" data-format="raw">
+                                  Raw
+                                </button>
+                                <button type="button" class="detail-tab" data-format="json">
+                                  Formatted JSON
+                                </button>
+                              </div>
+                              <button type="button" class="detail-copy">
+                                Copy
                               </button>
                             </div>
                             <pre class="detail-code"></pre>
@@ -401,20 +506,35 @@ export const RequestsLog: FC<RequestsLogProps> = ({ rows, total, pageSize, filte
 
                           <div class="detail-panel" data-raw={row.responseBody ?? ""}>
                             <div class="detail-panel-label">Response body</div>
-                            <div class="detail-tabs">
-                              <button type="button" class="detail-tab active" data-format="raw">
-                                Raw
-                              </button>
-                              <button type="button" class="detail-tab" data-format="json">
-                                Formatted JSON
-                              </button>
-                              <button type="button" class="detail-tab" data-format="markdown">
-                                Markdown
+                            <div class="detail-tabbar">
+                              <div class="detail-tabs">
+                                <button type="button" class="detail-tab active" data-format="raw">
+                                  Raw
+                                </button>
+                                <button type="button" class="detail-tab" data-format="json">
+                                  Formatted JSON
+                                </button>
+                                <button type="button" class="detail-tab" data-format="markdown">
+                                  Markdown
+                                </button>
+                                <button
+                                  type="button"
+                                  class="detail-tab"
+                                  data-format="content-json"
+                                  disabled
+                                  title="Enabled when the reply's content is itself JSON"
+                                >
+                                  Content JSON
+                                </button>
+                              </div>
+                              <button type="button" class="detail-copy">
+                                Copy
                               </button>
                             </div>
                             <pre class="detail-code"></pre>
                             <div class="detail-json" hidden></div>
                             <div class="detail-markdown" hidden></div>
+                            <div class="detail-content-json" hidden></div>
                           </div>
                         </div>
                       </div>

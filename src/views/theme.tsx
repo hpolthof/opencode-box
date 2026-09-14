@@ -282,7 +282,8 @@ export const BASE_STYLES = `
   .detail-panel { margin-bottom: 1.1rem; }
   .detail-panel:last-child { margin-bottom: 0; }
   .detail-panel-label { font-size: 0.78rem; color: var(--fg-muted); font-weight: 600; margin-bottom: 0.4rem; }
-  .detail-tabs { display: flex; gap: 0.3rem; margin-bottom: 0.5rem; }
+  .detail-tabbar { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.5rem; }
+  .detail-tabs { display: flex; flex-wrap: wrap; gap: 0.3rem; }
   .detail-tab {
     font-size: 0.75rem;
     padding: 0.3rem 0.65rem;
@@ -294,6 +295,20 @@ export const BASE_STYLES = `
   }
   .detail-tab:hover { color: var(--fg); }
   .detail-tab.active { color: var(--accent); border-color: var(--accent-border); background: var(--accent-soft); }
+  .detail-tab:disabled { opacity: 0.4; cursor: not-allowed; }
+  .detail-tab:disabled:hover { color: var(--fg-muted); }
+  .detail-copy {
+    font-size: 0.75rem;
+    padding: 0.3rem 0.65rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elevated);
+    color: var(--fg-muted);
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .detail-copy:hover { color: var(--fg); }
+  .detail-copy.copied { color: var(--accent); border-color: var(--accent-border); background: var(--accent-soft); }
   .detail-code { margin: 0; max-height: 420px; overflow: auto; }
   .detail-markdown {
     background: var(--bg-elevated);
@@ -315,7 +330,7 @@ export const BASE_STYLES = `
   .detail-markdown ul { margin: 0.3rem 0 0.6rem; padding-left: 1.3rem; }
   .detail-markdown a { color: var(--accent); }
 
-  .detail-json {
+  .detail-json, .detail-content-json {
     font-family: var(--font-mono);
     font-size: 0.8rem;
     background: var(--bg-elevated);
@@ -326,25 +341,25 @@ export const BASE_STYLES = `
     overflow: auto;
     line-height: 1.6;
   }
-  .detail-json .json-node summary { cursor: pointer; list-style: none; }
-  .detail-json .json-node summary::-webkit-details-marker { display: none; }
-  .detail-json .json-node summary::before {
+  .detail-json .json-node summary, .detail-content-json .json-node summary { cursor: pointer; list-style: none; }
+  .detail-json .json-node summary::-webkit-details-marker, .detail-content-json .json-node summary::-webkit-details-marker { display: none; }
+  .detail-json .json-node summary::before, .detail-content-json .json-node summary::before {
     content: "\\25B8";
     display: inline-block;
     width: 1em;
     color: var(--fg-muted);
     transition: transform 0.12s ease;
   }
-  .detail-json .json-node[open] > summary::before { transform: rotate(90deg); }
-  .detail-json .json-children { padding-left: 1.1rem; border-left: 1px solid var(--border); margin-left: 0.35rem; }
-  .detail-json .json-row { padding: 0.05rem 0; }
-  .detail-json .json-count { color: var(--fg-faint); font-size: 0.85em; }
-  .detail-json .json-key { color: var(--json-key); }
-  .detail-json .json-string { color: var(--json-string); overflow-wrap: anywhere; }
-  .detail-json .json-number { color: var(--json-number); }
-  .detail-json .json-boolean { color: var(--json-boolean); }
-  .detail-json .json-null { color: var(--fg-faint); }
-  .detail-json .json-punctuation { color: var(--fg-muted); }
+  .detail-json .json-node[open] > summary::before, .detail-content-json .json-node[open] > summary::before { transform: rotate(90deg); }
+  .detail-json .json-children, .detail-content-json .json-children { padding-left: 1.1rem; border-left: 1px solid var(--border); margin-left: 0.35rem; }
+  .detail-json .json-row, .detail-content-json .json-row { padding: 0.05rem 0; }
+  .detail-json .json-count, .detail-content-json .json-count { color: var(--fg-faint); font-size: 0.85em; }
+  .detail-json .json-key, .detail-content-json .json-key { color: var(--json-key); }
+  .detail-json .json-string, .detail-content-json .json-string { color: var(--json-string); overflow-wrap: anywhere; }
+  .detail-json .json-number, .detail-content-json .json-number { color: var(--json-number); }
+  .detail-json .json-boolean, .detail-content-json .json-boolean { color: var(--json-boolean); }
+  .detail-json .json-null, .detail-content-json .json-null { color: var(--fg-faint); }
+  .detail-json .json-punctuation, .detail-content-json .json-punctuation { color: var(--fg-muted); }
 
   .pill {
     display: inline-flex;
