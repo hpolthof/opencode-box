@@ -1,7 +1,7 @@
 import { db } from "./client";
 import type { RequestLogEntry, RequestLogRow } from "../types";
 
-const MAX_BODY_LEN = 8192;
+const MAX_BODY_LEN = 1_000_000;
 
 function truncate(value: string | null): string | null {
   if (value == null) return null;
