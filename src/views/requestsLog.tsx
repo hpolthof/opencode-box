@@ -349,6 +349,18 @@ const SCRIPT = `
       contentJsonTab.disabled = parseContentJson(raw) === undefined;
     }
   });
+
+  // The server renders the raw UTC timestamp (no reliable way to know the
+  // visitor's locale/timezone ahead of time); swap it for one formatted in
+  // the browser's own locale and timezone once the page has loaded, keeping
+  // the original ISO string as a hover tooltip.
+  Array.prototype.forEach.call(table.querySelectorAll(".req-time"), function (el) {
+    var iso = el.getAttribute("data-iso");
+    var date = new Date(iso);
+    if (isNaN(date.getTime())) return;
+    el.textContent = date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" });
+    el.title = iso;
+  });
 })();
 `;
 
@@ -423,7 +435,9 @@ export const RequestsLog: FC<RequestsLogProps> = ({ rows, total, pageSize, filte
             {rows.map((row) => (
               <>
                 <tr>
-                  <td class="mono">{row.createdAt}</td>
+                  <td class="mono req-time" data-iso={row.createdAt}>
+                    {row.createdAt}
+                  </td>
                   <td>{row.appName}</td>
                   <td class="mono">{row.model}</td>
                   <td class="mono">{row.variant ?? "-"}</td>
