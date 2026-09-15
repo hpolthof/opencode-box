@@ -15,11 +15,23 @@ export interface StreamDoneResult {
   errorMessage?: string;
 }
 
+export type FirstOutcome = { ok: true } | { ok: false; message: string };
+
 export interface OpenAIChatStream {
   /** Raw SSE byte stream ready to hand to a Response / c.newResponse. */
   stream: ReadableStream<Uint8Array>;
   /** Resolves once the stream has finished (successfully or on error). */
   done: Promise<StreamDoneResult>;
+  /**
+   * Resolves as soon as we know whether the response got off the ground -
+   * the first content delta was emitted, or the stream completed/failed
+   * with no content at all - whichever happens first. Lets a caller decide
+   * whether to fail over to another target before ever attaching `stream`
+   * to the real HTTP response: nothing reaches an actual client until then,
+   * since `stream`'s `start()` only buffers into the ReadableStream's
+   * internal queue until something reads from it.
+   */
+  firstOutcome: Promise<FirstOutcome>;
 }
 
 function sseFrame(chunk: ChatCompletionChunk): string {
@@ -48,6 +60,17 @@ export function createOpenAIChatStream(
     resolveDone = resolve;
   });
 
+  let resolveFirstOutcome!: (result: FirstOutcome) => void;
+  let firstOutcomeSettled = false;
+  const firstOutcome = new Promise<FirstOutcome>((resolve) => {
+    resolveFirstOutcome = resolve;
+  });
+  const settleFirstOutcome = (result: FirstOutcome) => {
+    if (firstOutcomeSettled) return;
+    firstOutcomeSettled = true;
+    resolveFirstOutcome(result);
+  };
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const partLengths = new Map<string, number>();
@@ -56,6 +79,7 @@ export function createOpenAIChatStream(
       let errorMessage: string | undefined;
 
       const emitDelta = (content: string) => {
+        settleFirstOutcome({ ok: true });
         const chunk: ChatCompletionChunk = {
           id,
           object: "chat.completion.chunk",
@@ -101,6 +125,7 @@ export function createOpenAIChatStream(
             const info = event.properties.info;
             if (info.error) {
               errorMessage = extractErrorMessage(info.error);
+              settleFirstOutcome({ ok: false, message: errorMessage });
             }
             if (info.tokens) {
               usage = {
@@ -110,6 +135,8 @@ export function createOpenAIChatStream(
               };
             }
             if (info.time?.completed != null) {
+              // No-op if a delta or an error already settled this.
+              settleFirstOutcome({ ok: true });
               emitFinish();
               controller.close();
               resolveDone({ fullText, usage, errorMessage });
@@ -121,11 +148,13 @@ export function createOpenAIChatStream(
 
         // Event feed ended without an explicit completion signal - still
         // terminate the client-facing stream cleanly.
+        settleFirstOutcome(errorMessage ? { ok: false, message: errorMessage } : { ok: true });
         emitFinish();
         controller.close();
         resolveDone({ fullText, usage, errorMessage });
       } catch (err) {
         errorMessage = err instanceof Error ? err.message : String(err);
+        settleFirstOutcome({ ok: false, message: errorMessage });
         try {
           emitFinish();
           controller.close();
@@ -137,5 +166,5 @@ export function createOpenAIChatStream(
     },
   });
 
-  return { stream, done };
+  return { stream, done, firstOutcome };
 }

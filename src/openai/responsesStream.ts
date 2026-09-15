@@ -17,11 +17,20 @@ export interface ResponsesStreamDoneResult {
   errorMessage?: string;
 }
 
+export type FirstOutcome = { ok: true } | { ok: false; message: string };
+
 export interface ResponsesStream {
   /** Raw SSE byte stream ready to hand to a Response / c.newResponse. */
   stream: ReadableStream<Uint8Array>;
   /** Resolves once the stream has finished (successfully or on error). */
   done: Promise<ResponsesStreamDoneResult>;
+  /**
+   * Resolves as soon as we know whether the response got off the ground -
+   * see the identical field on `OpenAIChatStream` in stream.ts for the full
+   * rationale (used to decide whether to fail over before attaching this
+   * stream to the real HTTP response).
+   */
+  firstOutcome: Promise<FirstOutcome>;
 }
 
 /**
@@ -51,6 +60,17 @@ export function createResponsesStream(
   const done = new Promise<ResponsesStreamDoneResult>((resolve) => {
     resolveDone = resolve;
   });
+
+  let resolveFirstOutcome!: (result: FirstOutcome) => void;
+  let firstOutcomeSettled = false;
+  const firstOutcome = new Promise<FirstOutcome>((resolve) => {
+    resolveFirstOutcome = resolve;
+  });
+  const settleFirstOutcome = (result: FirstOutcome) => {
+    if (firstOutcomeSettled) return;
+    firstOutcomeSettled = true;
+    resolveFirstOutcome(result);
+  };
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -119,6 +139,7 @@ export function createResponsesStream(
                 const delta = part.text.slice(prevLen);
                 partLengths.set(part.id, part.text.length);
                 fullText += delta;
+                settleFirstOutcome({ ok: true });
                 send({
                   type: "response.output_text.delta",
                   item_id: itemId,
@@ -138,11 +159,15 @@ export function createResponsesStream(
 
             if (info.error) {
               const response = buildResponseObject({ id: responseId, model, instructions, info, parts: [] });
+              const message = response.error?.message ?? "OpenCode reported an error";
+              settleFirstOutcome({ ok: false, message });
               send({ type: "response.failed", response, sequence_number: sequenceNumber++ });
-              finish({ fullText, usage: null, errorMessage: response.error?.message ?? "OpenCode reported an error" });
+              finish({ fullText, usage: null, errorMessage: message });
               return;
             }
 
+            // No-op if a delta already settled this.
+            settleFirstOutcome({ ok: true });
             const finalPart: ResponseOutputTextPart = { type: "output_text", text: fullText, annotations: [] };
             send({
               type: "response.output_text.done",
@@ -182,6 +207,7 @@ export function createResponsesStream(
 
         // Event feed ended without an explicit completion signal - still
         // terminate the client-facing stream cleanly, treating it as success.
+        settleFirstOutcome({ ok: true });
         const finalPart: ResponseOutputTextPart = { type: "output_text", text: fullText, annotations: [] };
         send({
           type: "response.output_text.done",
@@ -217,6 +243,7 @@ export function createResponsesStream(
         finish({ fullText, usage: null });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        settleFirstOutcome({ ok: false, message });
         try {
           const failedResponse: ResponseObject = {
             id: responseId,
@@ -239,5 +266,5 @@ export function createResponsesStream(
     },
   });
 
-  return { stream, done };
+  return { stream, done, firstOutcome };
 }

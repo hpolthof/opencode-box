@@ -39,14 +39,27 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
--- Client-selectable "virtual" models that route to a real provider/model
--- pinned to one specific reasoning variant, so a client can pick e.g.
--- "gpt-xhigh" as `model` without needing to know about variants at all.
+-- Client-selectable "virtual" models that route to one or more real
+-- provider/model+variant targets, so a client can pick e.g. "gpt-xhigh" as
+-- `model` without needing to know about variants (or, with multiple
+-- targets, load-balancing/failover) at all. `mode` picks how the targets in
+-- model_alias_targets are tried on each request: "priority" (in `position`
+-- order, falling over to the next on error/timeout) or "random" (a random
+-- order each time, still falling over through the rest of that order).
 CREATE TABLE IF NOT EXISTS model_aliases (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   alias       TEXT NOT NULL UNIQUE,
+  mode        TEXT NOT NULL DEFAULT 'priority',
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS model_alias_targets (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  alias_id    INTEGER NOT NULL REFERENCES model_aliases(id) ON DELETE CASCADE,
   provider_id TEXT NOT NULL,
   model_id    TEXT NOT NULL,
   variant     TEXT NOT NULL,
-  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  position    INTEGER NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_model_alias_targets_alias_id ON model_alias_targets(alias_id);

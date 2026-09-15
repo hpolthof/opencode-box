@@ -9,8 +9,10 @@
 // return before ever calling `listModels()` (the allowedModels gate) or
 // that go on to call it and are expected to fail gracefully without a live
 // server. The full happy path (alias -> real model + pinned variant,
-// end to end through a POST /v1/chat/completions call) was verified
-// manually against a stand-in OpenCode server during development.
+// multi-target priority/random ordering, and failover on error/timeout,
+// end to end through POST /v1/chat/completions and /v1/responses calls)
+// was verified manually against a stand-in OpenCode server during
+// development.
 import { describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { createAlias, deleteAlias, findAliasByName, listAliases } from "../src/db/modelAliases";
@@ -22,12 +24,11 @@ const adminApp = new Hono().route("/admin", adminRouter);
 const v1App = new Hono().route("/v1", v1Router);
 
 describe("db/modelAliases", () => {
-  test("create, find, list and delete round-trip", () => {
-    const record = createAlias("alias-db-test-1", "openai", "gpt-5.6-luna", "xhigh");
+  test("create, find, list and delete round-trip (single target)", () => {
+    const record = createAlias("alias-db-test-1", "priority", [{ providerID: "openai", modelID: "gpt-5.6-luna", variant: "xhigh" }]);
     expect(record.alias).toBe("alias-db-test-1");
-    expect(record.providerID).toBe("openai");
-    expect(record.modelID).toBe("gpt-5.6-luna");
-    expect(record.variant).toBe("xhigh");
+    expect(record.mode).toBe("priority");
+    expect(record.targets).toEqual([{ providerID: "openai", modelID: "gpt-5.6-luna", variant: "xhigh" }]);
 
     expect(findAliasByName("alias-db-test-1")).toEqual(record);
     expect(findAliasByName("does-not-exist")).toBeNull();
@@ -37,9 +38,27 @@ describe("db/modelAliases", () => {
     expect(findAliasByName("alias-db-test-1")).toBeNull();
   });
 
+  test("multi-target aliases preserve target order by position", () => {
+    const targets = [
+      { providerID: "openai", modelID: "gpt-5.6-luna", variant: "xhigh" },
+      { providerID: "openai", modelID: "gpt-5.1", variant: "high" },
+      { providerID: "anthropic", modelID: "claude-z", variant: "medium" },
+    ];
+    const record = createAlias("alias-db-test-multi", "random", targets);
+    expect(record.mode).toBe("random");
+    expect(record.targets).toEqual(targets);
+    expect(findAliasByName("alias-db-test-multi")!.targets).toEqual(targets);
+  });
+
+  test("creating with zero targets throws", () => {
+    expect(() => createAlias("alias-db-test-empty", "priority", [])).toThrow();
+  });
+
   test("alias names must be unique", () => {
-    createAlias("alias-db-test-unique", "openai", "gpt-5.6-luna", "high");
-    expect(() => createAlias("alias-db-test-unique", "openai", "gpt-5.1", "low")).toThrow();
+    createAlias("alias-db-test-unique", "priority", [{ providerID: "openai", modelID: "gpt-5.6-luna", variant: "high" }]);
+    expect(() =>
+      createAlias("alias-db-test-unique", "priority", [{ providerID: "openai", modelID: "gpt-5.1", variant: "low" }])
+    ).toThrow();
   });
 });
 
@@ -67,7 +86,12 @@ describe("admin /admin/aliases (no live OpenCode)", () => {
     const res = await adminApp.request("/admin/aliases", {
       method: "POST",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ name: "alias-unreachable", model: "openai/gpt-5.6-luna", variant: "xhigh" }).toString(),
+      body: new URLSearchParams({
+        name: "alias-unreachable",
+        mode: "priority",
+        targetModel: "openai/gpt-5.6-luna",
+        targetVariant: "xhigh",
+      }).toString(),
     });
     expect(res.status).toBe(400);
     expect(findAliasByName("alias-unreachable")).toBeNull();
@@ -76,7 +100,7 @@ describe("admin /admin/aliases (no live OpenCode)", () => {
 
 describe("v1Router alias resolution (no live OpenCode)", () => {
   test("a key not allowed to use an existing alias is blocked with 403 before any OpenCode call", async () => {
-    createAlias("alias-gate-test", "openai", "gpt-5.6-luna", "xhigh");
+    createAlias("alias-gate-test", "priority", [{ providerID: "openai", modelID: "gpt-5.6-luna", variant: "xhigh" }]);
     const { rawKey } = createKey("alias-gate-test-key", ["some-other-model"]);
 
     const res = await v1App.request("/v1/chat/completions", {
@@ -90,7 +114,7 @@ describe("v1Router alias resolution (no live OpenCode)", () => {
   });
 
   test("an existing alias for an unrestricted key fails gracefully (502) without a live OpenCode server", async () => {
-    createAlias("alias-degraded-test", "openai", "gpt-5.6-luna", "xhigh");
+    createAlias("alias-degraded-test", "priority", [{ providerID: "openai", modelID: "gpt-5.6-luna", variant: "xhigh" }]);
     const { rawKey } = createKey("alias-degraded-test-key");
 
     const res = await v1App.request("/v1/chat/completions", {

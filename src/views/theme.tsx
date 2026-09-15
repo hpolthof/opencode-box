@@ -233,6 +233,11 @@ export const BASE_STYLES = `
   .model-picker-option input { margin: 0; accent-color: var(--accent); }
   .model-picker-empty { color: var(--fg-faint); font-size: 0.82rem; padding: 0.4rem; }
 
+  .alias-target-row { display: flex; gap: 0.4rem; align-items: center; margin-bottom: 0.5rem; }
+  .alias-target-row select { flex: 1; min-width: 0; }
+  .alias-target-row button.row-toggle { padding: 0.5rem 0.6rem; flex-shrink: 0; }
+  .alias-target-row button.danger { flex-shrink: 0; }
+
   .table-card {
     background: var(--bg-elevated);
     border: 1px solid var(--border);

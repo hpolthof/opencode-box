@@ -9,12 +9,20 @@ export interface ApiKeyRecord {
   lastUsedAt: string | null;
 }
 
-export interface ModelAliasRecord {
-  id: number;
-  alias: string;
+export interface ModelAliasTarget {
   providerID: string;
   modelID: string;
   variant: string;
+}
+
+export type ModelAliasMode = "priority" | "random";
+
+export interface ModelAliasRecord {
+  id: number;
+  alias: string;
+  mode: ModelAliasMode;
+  /** Ordered by `position` - for "priority" mode this IS the try order; for "random" mode it's just display order. */
+  targets: ModelAliasTarget[];
   createdAt: string;
 }
 

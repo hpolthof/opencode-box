@@ -94,18 +94,21 @@ function toSessionPromptBody(body: SendMessageBody): SessionPromptBody {
 
 export async function sendMessage(
   sessionId: string,
-  body: SendMessageBody
+  body: SendMessageBody,
+  signal?: AbortSignal
 ): Promise<SessionPromptResponse> {
   return request<SessionPromptResponse>(`/session/${sessionId}/message`, {
     method: "POST",
     body: JSON.stringify(toSessionPromptBody(body)),
+    signal,
   });
 }
 
-export async function sendPromptAsync(sessionId: string, body: SendMessageBody): Promise<void> {
+export async function sendPromptAsync(sessionId: string, body: SendMessageBody, signal?: AbortSignal): Promise<void> {
   await request<unknown>(`/session/${sessionId}/prompt_async`, {
     method: "POST",
     body: JSON.stringify(toSessionPromptBody(body)),
+    signal,
   });
 }
 
@@ -283,5 +286,5 @@ export async function listProviders(): Promise<ProviderSummary[]> {
 // Re-exports for convenience
 // ---------------------------------------------------------------------------
 
-export type { AssistantMessage, OpenCodeEvent, OutputFormat, Part };
+export type { AssistantMessage, OpenCodeEvent, OutputFormat, Part, SessionPromptResponse };
 export { OpenCodeRequestError };
