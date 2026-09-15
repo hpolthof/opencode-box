@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { createKey, listKeys, revokeKey, updateAllowedModels } from "../../db/apiKeys";
+import { listAliases } from "../../db/modelAliases";
 import { listModels, type ModelSummary } from "../../opencode/client";
 import { Keys } from "../../views/keys";
 
@@ -23,22 +24,23 @@ function parseAllowedModels(raw: unknown): string[] {
 
 keysRouter.get("/keys", async (c) => {
   const { models, modelsUnreachable } = await availableModels();
-  return c.html(Keys({ keys: listKeys(), models, modelsUnreachable }) as string);
+  return c.html(Keys({ keys: listKeys(), models, modelsUnreachable, aliases: listAliases() }) as string);
 });
 
 keysRouter.post("/keys", async (c) => {
   const body = await c.req.parseBody({ all: true });
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const { models, modelsUnreachable } = await availableModels();
+  const aliases = listAliases();
 
   if (!name) {
-    return c.html(Keys({ keys: listKeys(), models, modelsUnreachable, error: "Name is required" }) as string, 400);
+    return c.html(Keys({ keys: listKeys(), models, modelsUnreachable, aliases, error: "Name is required" }) as string, 400);
   }
 
   const allowedModels = parseAllowedModels(body.allowedModels);
   const { record, rawKey } = createKey(name, allowedModels.length > 0 ? allowedModels : null);
 
-  return c.html(Keys({ keys: listKeys(), models, modelsUnreachable, newKey: { name: record.name, rawKey } }) as string);
+  return c.html(Keys({ keys: listKeys(), models, modelsUnreachable, aliases, newKey: { name: record.name, rawKey } }) as string);
 });
 
 keysRouter.post("/keys/:id/revoke", (c) => {

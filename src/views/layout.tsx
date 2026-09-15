@@ -8,6 +8,7 @@ const NAV_LINKS = [
   { href: "/admin/requests", label: "Requests" },
   { href: "/admin/providers", label: "Providers" },
   { href: "/admin/models", label: "Models" },
+  { href: "/admin/aliases", label: "Aliases" },
   { href: "/admin/terminal", label: "Terminal" },
   { href: "/admin/maintenance", label: "Maintenance" },
 ];

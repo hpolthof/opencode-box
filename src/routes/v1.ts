@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { apiKeyAuth, getApiKey, type ApiKeyAuthEnv } from "../auth/apiKeyAuth";
+import { findAliasByName, listAliases } from "../db/modelAliases";
 import { insertRequestLog } from "../db/requests";
 import {
   createSession,
@@ -84,19 +85,65 @@ function logError(pending: PendingLog, start: number, httpStatus: number, errorM
 }
 
 type ModelResolution =
-  | { ok: true; matched: ModelSummary }
+  | { ok: true; providerID: string; modelID: string; variant: string | undefined; matched: ModelSummary }
   | { ok: false; status: 400 | 403 | 404 | 502; message: string; type: "invalid_request_error" | "api_error"; code?: string };
 
 /**
- * Shared by /chat/completions and /responses: confirms `requestedId` exists
- * on this gateway, is allowed for the calling key, and - if a reasoning
- * variant was requested - that the model actually offers it.
+ * Shared by /chat/completions and /responses. `requestedModel` is exactly
+ * what the client sent as `model` - first checked against the model-alias
+ * table (an alias always wins over a same-named real model and forces its
+ * own pinned variant, ignoring `explicitVariant`), then, if it isn't an
+ * alias, parsed as a plain "provider/model[#variant]" id. Either way this
+ * confirms the resolved model exists on this gateway, is allowed for the
+ * calling key (checked against `requestedModel` as typed - the alias name
+ * itself for an alias, not what it points to), and - if a reasoning variant
+ * is in play - that the model actually offers it.
  */
-async function resolveModelAndVariant(
-  requestedId: string,
-  variant: string | undefined,
+async function resolveRequestedModel(
+  requestedModel: string,
+  explicitVariant: string | undefined,
   allowedModels: string[] | null
 ): Promise<ModelResolution> {
+  const alias = findAliasByName(requestedModel);
+  if (alias) {
+    if (allowedModels && !allowedModels.includes(requestedModel)) {
+      return {
+        ok: false,
+        status: 403,
+        message: `API key is not permitted to use model "${requestedModel}"`,
+        type: "invalid_request_error",
+        code: "model_not_allowed",
+      };
+    }
+    try {
+      const available = await listModels();
+      const matched = available.find((m) => m.providerID === alias.providerID && m.modelID === alias.modelID);
+      if (!matched) {
+        return {
+          ok: false,
+          status: 502,
+          message: `Alias "${requestedModel}" routes to "${alias.providerID}/${alias.modelID}", which is no longer available from OpenCode`,
+          type: "api_error",
+        };
+      }
+      return { ok: true, providerID: alias.providerID, modelID: alias.modelID, variant: alias.variant, matched };
+    } catch {
+      return { ok: false, status: 502, message: "Failed to look up available models from OpenCode", type: "api_error" };
+    }
+  }
+
+  let providerID: string;
+  let modelID: string;
+  let variantFromModel: string | undefined;
+  try {
+    ({ providerID, modelID, variant: variantFromModel } = parseModelId(requestedModel));
+  } catch (err) {
+    const message = err instanceof InvalidModelError ? err.message : "Invalid model id";
+    return { ok: false, status: 400, message, type: "invalid_request_error" };
+  }
+  const variant = explicitVariant ?? variantFromModel;
+  const requestedId = `${providerID}/${modelID}`;
+
   try {
     const available = await listModels();
     const matched = available.find((m) => m.id === requestedId);
@@ -127,7 +174,7 @@ async function resolveModelAndVariant(
         code: "variant_not_found",
       };
     }
-    return { ok: true, matched };
+    return { ok: true, providerID, modelID, variant, matched };
   } catch {
     return { ok: false, status: 502, message: "Failed to look up available models from OpenCode", type: "api_error" };
   }
@@ -176,29 +223,18 @@ v1Router.post("/chat/completions", async (c) => {
     return c.json(openAIError(message, "invalid_request_error"), 400);
   }
 
-  let providerID: string;
-  let modelID: string;
-  let variantFromModel: string | undefined;
-  try {
-    ({ providerID, modelID, variant: variantFromModel } = parseModelId(body.model));
-  } catch (err) {
-    const message = err instanceof InvalidModelError ? err.message : "Invalid model id";
-    logError(pending, start, 400, message, rawBody);
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
+  const explicitVariant =
+    typeof body.reasoning_effort === "string" && body.reasoning_effort.length > 0 ? body.reasoning_effort : undefined;
 
-  const variant =
-    typeof body.reasoning_effort === "string" && body.reasoning_effort.length > 0
-      ? body.reasoning_effort
-      : variantFromModel;
-  pending.variant = variant ?? null;
-
-  const requestedId = `${providerID}/${modelID}`;
-  const resolution = await resolveModelAndVariant(requestedId, variant, apiKey.allowedModels);
+  const resolution = await resolveRequestedModel(body.model, explicitVariant, apiKey.allowedModels);
   if (!resolution.ok) {
+    pending.variant = explicitVariant ?? null;
     logError(pending, start, resolution.status, resolution.message, rawBody);
     return c.json(openAIError(resolution.message, resolution.type, resolution.code), resolution.status);
   }
+  const { providerID, modelID, variant } = resolution;
+  pending.model = `${providerID}/${modelID}`;
+  pending.variant = variant ?? null;
 
   const { system, text } = messagesToOpenCodePrompt(body.messages);
   const format = buildOpenCodeFormat(body.response_format);
@@ -344,27 +380,18 @@ v1Router.post("/responses", async (c) => {
     return c.json(openAIError(message, "invalid_request_error"), 400);
   }
 
-  let providerID: string;
-  let modelID: string;
-  let variantFromModel: string | undefined;
-  try {
-    ({ providerID, modelID, variant: variantFromModel } = parseModelId(body.model));
-  } catch (err) {
-    const message = err instanceof InvalidModelError ? err.message : "Invalid model id";
-    logError(pending, start, 400, message, rawBody);
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
+  const explicitVariant =
+    typeof body.reasoning?.effort === "string" && body.reasoning.effort.length > 0 ? body.reasoning.effort : undefined;
 
-  const variant =
-    typeof body.reasoning?.effort === "string" && body.reasoning.effort.length > 0 ? body.reasoning.effort : variantFromModel;
-  pending.variant = variant ?? null;
-
-  const requestedId = `${providerID}/${modelID}`;
-  const resolution = await resolveModelAndVariant(requestedId, variant, apiKey.allowedModels);
+  const resolution = await resolveRequestedModel(body.model, explicitVariant, apiKey.allowedModels);
   if (!resolution.ok) {
+    pending.variant = explicitVariant ?? null;
     logError(pending, start, resolution.status, resolution.message, rawBody);
     return c.json(openAIError(resolution.message, resolution.type, resolution.code), resolution.status);
   }
+  const { providerID, modelID, variant } = resolution;
+  pending.model = `${providerID}/${modelID}`;
+  pending.variant = variant ?? null;
 
   const { system, text } = parseResponsesInput(body.input, body.instructions);
   const format = buildResponsesFormat(body.text);
@@ -480,15 +507,27 @@ v1Router.get("/models", async (c) => {
       ? all.filter((m) => apiKey.allowedModels!.includes(m.id))
       : all;
 
+    const aliases = apiKey.allowedModels
+      ? listAliases().filter((a) => apiKey.allowedModels!.includes(a.alias))
+      : listAliases();
+
     const response: ModelListResponse = {
       object: "list",
-      data: filtered.map((m) => ({
-        id: m.id,
-        object: "model",
-        created: 0,
-        owned_by: "opencode",
-        ...(m.variants && m.variants.length > 0 ? { variants: m.variants } : {}),
-      })),
+      data: [
+        ...filtered.map((m) => ({
+          id: m.id,
+          object: "model" as const,
+          created: 0,
+          owned_by: "opencode",
+          ...(m.variants && m.variants.length > 0 ? { variants: m.variants } : {}),
+        })),
+        ...aliases.map((a) => ({
+          id: a.alias,
+          object: "model" as const,
+          created: 0,
+          owned_by: "opencode",
+        })),
+      ],
     };
     return c.json(response, 200);
   } catch (err) {

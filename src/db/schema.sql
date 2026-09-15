@@ -38,3 +38,15 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Client-selectable "virtual" models that route to a real provider/model
+-- pinned to one specific reasoning variant, so a client can pick e.g.
+-- "gpt-xhigh" as `model` without needing to know about variants at all.
+CREATE TABLE IF NOT EXISTS model_aliases (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  alias       TEXT NOT NULL UNIQUE,
+  provider_id TEXT NOT NULL,
+  model_id    TEXT NOT NULL,
+  variant     TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

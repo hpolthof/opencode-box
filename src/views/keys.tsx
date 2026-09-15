@@ -1,13 +1,14 @@
 import type { FC } from "hono/jsx";
 import { Layout } from "./layout";
 import { StatusPill } from "./theme";
-import type { ApiKeyRecord } from "../types";
+import type { ApiKeyRecord, ModelAliasRecord } from "../types";
 import type { ModelSummary } from "../opencode/client";
 
 interface KeysProps {
   keys: ApiKeyRecord[];
   models?: ModelSummary[];
   modelsUnreachable?: boolean;
+  aliases?: ModelAliasRecord[];
   newKey?: { name: string; rawKey: string };
   error?: string;
 }
@@ -103,10 +104,11 @@ const KEYS_SCRIPT = `
 const ModelPicker: FC<{
   modelsByProvider: Map<string, ModelSummary[]>;
   modelsUnreachable?: boolean;
+  aliasNames: string[];
   name: string;
   selected: Set<string>;
-}> = ({ modelsByProvider, modelsUnreachable, name, selected }) => {
-  if (modelsUnreachable || modelsByProvider.size === 0) {
+}> = ({ modelsByProvider, modelsUnreachable, aliasNames, name, selected }) => {
+  if (modelsUnreachable || (modelsByProvider.size === 0 && aliasNames.length === 0)) {
     return (
       <div class="model-picker">
         <div class="model-picker-empty" style="padding: 0.5rem 0;">
@@ -124,6 +126,17 @@ const ModelPicker: FC<{
         <span class="model-picker-label">{label}</span>
       </summary>
       <div class="model-picker-panel">
+        {aliasNames.length > 0 && (
+          <div class="model-picker-group">
+            <div class="model-picker-group-label">aliases</div>
+            {aliasNames.map((alias) => (
+              <label class="model-picker-option">
+                <input type="checkbox" name={name} value={alias} checked={selected.has(alias)} />
+                <span class="mono">{alias}</span>
+              </label>
+            ))}
+          </div>
+        )}
         {Array.from(modelsByProvider.entries()).map(([providerID, providerModels]) => (
           <div class="model-picker-group">
             <div class="model-picker-group-label">{providerID}</div>
@@ -140,13 +153,14 @@ const ModelPicker: FC<{
   );
 };
 
-export const Keys: FC<KeysProps> = ({ keys, models, modelsUnreachable, newKey, error }) => {
+export const Keys: FC<KeysProps> = ({ keys, models, modelsUnreachable, aliases, newKey, error }) => {
   const modelsByProvider = new Map<string, ModelSummary[]>();
   for (const model of models ?? []) {
     const list = modelsByProvider.get(model.providerID) ?? [];
     list.push(model);
     modelsByProvider.set(model.providerID, list);
   }
+  const aliasNames = (aliases ?? []).map((a) => a.alias);
 
   return (
     <Layout title="Keys" subtitle="Issue and revoke API keys for client applications.">
@@ -171,7 +185,13 @@ export const Keys: FC<KeysProps> = ({ keys, models, modelsUnreachable, newKey, e
         </label>
         <label>
           Allowed models
-          <ModelPicker modelsByProvider={modelsByProvider} modelsUnreachable={modelsUnreachable} name="allowedModels" selected={new Set()} />
+          <ModelPicker
+            modelsByProvider={modelsByProvider}
+            modelsUnreachable={modelsUnreachable}
+            aliasNames={aliasNames}
+            name="allowedModels"
+            selected={new Set()}
+          />
         </label>
         <button type="submit">Create key</button>
       </form>
@@ -241,6 +261,7 @@ export const Keys: FC<KeysProps> = ({ keys, models, modelsUnreachable, newKey, e
                           <ModelPicker
                             modelsByProvider={modelsByProvider}
                             modelsUnreachable={modelsUnreachable}
+                            aliasNames={aliasNames}
                             name="allowedModels"
                             selected={new Set(key.allowedModels ?? [])}
                           />

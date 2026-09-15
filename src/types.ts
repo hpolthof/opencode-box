@@ -9,6 +9,15 @@ export interface ApiKeyRecord {
   lastUsedAt: string | null;
 }
 
+export interface ModelAliasRecord {
+  id: number;
+  alias: string;
+  providerID: string;
+  modelID: string;
+  variant: string;
+  createdAt: string;
+}
+
 export interface RequestLogEntry {
   apiKeyId: number | null;
   appName: string;
