@@ -23,16 +23,53 @@ const KEYS_SCRIPT = `
       : checked.length + " model" + (checked.length === 1 ? "" : "s") + " selected";
   }
 
+  // The panel is position: fixed so it can float above the table (which
+  // clips absolutely-positioned children via its own horizontal scrollbar).
+  // Fixed positioning is viewport-relative, not parent-relative, so its
+  // coordinates have to be computed from the summary's bounding rect here.
+  function positionModelPickerPanel(details) {
+    var summary = details.querySelector("summary");
+    var panel = details.querySelector(".model-picker-panel");
+    if (!summary || !panel) return;
+    var rect = summary.getBoundingClientRect();
+    var width = Math.max(rect.width, 280);
+    var left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    var maxHeight = Math.max(120, Math.min(280, window.innerHeight - rect.bottom - 16));
+    panel.style.width = width + "px";
+    panel.style.left = left + "px";
+    panel.style.top = (rect.bottom + 6) + "px";
+    panel.style.maxHeight = maxHeight + "px";
+  }
+
   Array.prototype.forEach.call(document.querySelectorAll("details.model-picker"), function (details) {
     var checkboxes = details.querySelectorAll('input[type="checkbox"]');
     Array.prototype.forEach.call(checkboxes, function (cb) {
       cb.addEventListener("change", function () { updateModelPickerLabel(details); });
+    });
+    details.addEventListener("toggle", function () {
+      if (details.open) positionModelPickerPanel(details);
     });
   });
 
   document.addEventListener("click", function (e) {
     Array.prototype.forEach.call(document.querySelectorAll("details.model-picker[open]"), function (d) {
       if (!d.contains(e.target)) d.removeAttribute("open");
+    });
+  });
+
+  // Any scroll (page-level, or the table's own horizontal scrollbar)
+  // invalidates the panel's fixed coordinates, computed at open time -
+  // close it rather than let it drift. Scrolling inside the panel's own
+  // (possibly long) model list is exempt.
+  window.addEventListener("scroll", function (e) {
+    Array.prototype.forEach.call(document.querySelectorAll("details.model-picker[open]"), function (d) {
+      if (!d.contains(e.target)) d.removeAttribute("open");
+    });
+  }, true);
+
+  window.addEventListener("resize", function () {
+    Array.prototype.forEach.call(document.querySelectorAll("details.model-picker[open]"), function (d) {
+      d.removeAttribute("open");
     });
   });
 

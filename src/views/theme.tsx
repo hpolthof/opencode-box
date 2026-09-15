@@ -146,7 +146,7 @@ export const BASE_STYLES = `
   }
   .logout-link:hover { color: var(--fg); border-color: var(--border-strong); }
 
-  main { padding: 2rem 1.75rem 3.5rem; max-width: 1180px; margin: 0 auto; }
+  main { padding: 2rem 1.75rem 3.5rem; max-width: none; margin: 0 auto; }
   .page-header { margin-bottom: 1.75rem; }
   h1 { font-size: 1.5rem; margin: 0 0 0.3rem; font-weight: 700; letter-spacing: -0.01em; }
   .page-subtitle { color: var(--fg-muted); font-size: 0.88rem; margin: 0; }
@@ -200,12 +200,16 @@ export const BASE_STYLES = `
   .model-picker summary::-webkit-details-marker { display: none; }
   .model-picker summary::after { content: "\\25BE"; color: var(--fg-muted); font-size: 0.7rem; }
   .model-picker[open] summary { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  /*
+   * position: fixed (not absolute) so the panel escapes any clipping
+   * ancestor - notably .table-card's overflow-x: auto, which would
+   * otherwise trap a picker opened inside a table row. Exact top/left/width
+   * are set inline by JS from the summary's bounding rect, since fixed
+   * positioning is viewport-relative rather than parent-relative.
+   */
   .model-picker-panel {
-    position: absolute;
-    top: calc(100% + 0.35rem);
-    left: 0;
-    z-index: 20;
-    width: max(280px, 100%);
+    position: fixed;
+    z-index: 30;
     max-height: 280px;
     overflow-y: auto;
     background: var(--bg-elevated);
@@ -254,6 +258,10 @@ export const BASE_STYLES = `
 
   tr.detail-row td { background: var(--bg-subtle); padding: 0; }
   .key-edit-panel { padding: 1.1rem 1.25rem; }
+  /* Match the regular button size here so Edit/Cancel doesn't look
+     undersized next to Revoke - .row-toggle is deliberately small where it
+     first appeared, as a compact row-detail toggle. */
+  #keys-table button.row-toggle { padding: 0.5rem 0.9rem; font-size: 0.85rem; }
   /*
    * A <tr> can't have its height transitioned directly (table rows don't
    * animate cleanly across browsers). Instead the collapse/expand animation
