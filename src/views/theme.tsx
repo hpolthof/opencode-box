@@ -253,6 +253,7 @@ export const BASE_STYLES = `
   .mono { font-family: var(--font-mono); font-size: 0.82em; }
 
   tr.detail-row td { background: var(--bg-subtle); padding: 0; }
+  .key-edit-panel { padding: 1.1rem 1.25rem; }
   /*
    * A <tr> can't have its height transitioned directly (table rows don't
    * animate cleanly across browsers). Instead the collapse/expand animation

@@ -63,6 +63,11 @@ export function revokeKey(id: number): void {
   db.query("UPDATE api_keys SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(id);
 }
 
+export function updateAllowedModels(id: number, allowedModels: string[] | null): void {
+  const allowedModelsJson = allowedModels && allowedModels.length > 0 ? JSON.stringify(allowedModels) : null;
+  db.query("UPDATE api_keys SET allowed_models = ? WHERE id = ?").run(allowedModelsJson, id);
+}
+
 export function touchLastUsed(id: number): void {
   db.query("UPDATE api_keys SET last_used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(id);
 }

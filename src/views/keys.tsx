@@ -12,27 +12,96 @@ interface KeysProps {
   error?: string;
 }
 
-const MODEL_PICKER_SCRIPT = `
+const KEYS_SCRIPT = `
 (function () {
-  var details = document.querySelector("details.model-picker");
-  if (!details) return;
-  var label = details.querySelector(".model-picker-label");
-  var checkboxes = details.querySelectorAll('input[type="checkbox"]');
-  function update() {
+  function updateModelPickerLabel(details) {
+    var label = details.querySelector(".model-picker-label");
+    var checkboxes = details.querySelectorAll('input[type="checkbox"]');
     var checked = Array.prototype.filter.call(checkboxes, function (cb) { return cb.checked; });
     label.textContent = checked.length === 0
       ? "All models (unrestricted)"
       : checked.length + " model" + (checked.length === 1 ? "" : "s") + " selected";
   }
-  Array.prototype.forEach.call(checkboxes, function (cb) {
-    cb.addEventListener("change", update);
+
+  Array.prototype.forEach.call(document.querySelectorAll("details.model-picker"), function (details) {
+    var checkboxes = details.querySelectorAll('input[type="checkbox"]');
+    Array.prototype.forEach.call(checkboxes, function (cb) {
+      cb.addEventListener("change", function () { updateModelPickerLabel(details); });
+    });
   });
+
   document.addEventListener("click", function (e) {
-    if (!details.contains(e.target)) details.removeAttribute("open");
+    Array.prototype.forEach.call(document.querySelectorAll("details.model-picker[open]"), function (d) {
+      if (!d.contains(e.target)) d.removeAttribute("open");
+    });
   });
-  update();
+
+  var table = document.getElementById("keys-table");
+  if (!table) return;
+  table.addEventListener("click", function (e) {
+    var toggle = e.target.closest(".row-toggle");
+    if (!toggle) return;
+    var editRow = toggle.closest("tr").nextElementSibling;
+    if (!editRow) return;
+
+    var nowHidden = !editRow.hidden;
+    editRow.hidden = nowHidden;
+    toggle.textContent = nowHidden ? "Edit" : "Cancel";
+
+    // Closing without saving: reset the form so a re-opened picker shows
+    // the still-current allowed models, not whatever was left half-checked.
+    if (nowHidden) {
+      var form = editRow.querySelector("form");
+      if (form) form.reset();
+      var picker = editRow.querySelector("details.model-picker");
+      if (picker) {
+        picker.removeAttribute("open");
+        updateModelPickerLabel(picker);
+      }
+    }
+  });
 })();
 `;
+
+const ModelPicker: FC<{
+  modelsByProvider: Map<string, ModelSummary[]>;
+  modelsUnreachable?: boolean;
+  name: string;
+  selected: Set<string>;
+}> = ({ modelsByProvider, modelsUnreachable, name, selected }) => {
+  if (modelsUnreachable || modelsByProvider.size === 0) {
+    return (
+      <div class="model-picker">
+        <div class="model-picker-empty" style="padding: 0.5rem 0;">
+          {modelsUnreachable ? "OpenCode is not reachable — key will be unrestricted." : "No models available."}
+        </div>
+      </div>
+    );
+  }
+
+  const label = selected.size === 0 ? "All models (unrestricted)" : `${selected.size} model${selected.size === 1 ? "" : "s"} selected`;
+
+  return (
+    <details class="model-picker">
+      <summary>
+        <span class="model-picker-label">{label}</span>
+      </summary>
+      <div class="model-picker-panel">
+        {Array.from(modelsByProvider.entries()).map(([providerID, providerModels]) => (
+          <div class="model-picker-group">
+            <div class="model-picker-group-label">{providerID}</div>
+            {providerModels.map((model) => (
+              <label class="model-picker-option">
+                <input type="checkbox" name={name} value={model.id} checked={selected.has(model.id)} />
+                <span class="mono">{model.id}</span>
+              </label>
+            ))}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+};
 
 export const Keys: FC<KeysProps> = ({ keys, models, modelsUnreachable, newKey, error }) => {
   const modelsByProvider = new Map<string, ModelSummary[]>();
@@ -65,41 +134,14 @@ export const Keys: FC<KeysProps> = ({ keys, models, modelsUnreachable, newKey, e
         </label>
         <label>
           Allowed models
-          {modelsUnreachable || modelsByProvider.size === 0 ? (
-            <div class="model-picker">
-              <div class="model-picker-empty" style="padding: 0.5rem 0;">
-                {modelsUnreachable ? "OpenCode is not reachable — key will be unrestricted." : "No models available."}
-              </div>
-            </div>
-          ) : (
-            <details class="model-picker">
-              <summary>
-                <span class="model-picker-label">All models (unrestricted)</span>
-              </summary>
-              <div class="model-picker-panel">
-                {Array.from(modelsByProvider.entries()).map(([providerID, providerModels]) => (
-                  <div class="model-picker-group">
-                    <div class="model-picker-group-label">{providerID}</div>
-                    {providerModels.map((model) => (
-                      <label class="model-picker-option">
-                        <input type="checkbox" name="allowedModels" value={model.id} />
-                        <span class="mono">{model.id}</span>
-                      </label>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </details>
-          )}
+          <ModelPicker modelsByProvider={modelsByProvider} modelsUnreachable={modelsUnreachable} name="allowedModels" selected={new Set()} />
         </label>
         <button type="submit">Create key</button>
       </form>
 
-      <script dangerouslySetInnerHTML={{ __html: MODEL_PICKER_SCRIPT }}></script>
-
       <h2>Existing keys</h2>
       <div class="table-card">
-        <table>
+        <table id="keys-table">
           <thead>
             <tr>
               <th>Name</th>
@@ -120,37 +162,64 @@ export const Keys: FC<KeysProps> = ({ keys, models, modelsUnreachable, newKey, e
               </tr>
             )}
             {keys.map((key) => (
-              <tr>
-                <td>{key.name}</td>
-                <td>
-                  <code>{key.keyPrefix}…</code>
-                </td>
-                <td>{key.allowedModels && key.allowedModels.length > 0 ? key.allowedModels.join(", ") : "all"}</td>
-                <td>{key.createdAt}</td>
-                <td>
-                  {key.revokedAt ? (
-                    <StatusPill tone="muted">revoked {key.revokedAt}</StatusPill>
-                  ) : (
-                    <StatusPill tone="ok">active</StatusPill>
-                  )}
-                </td>
-                <td>{key.lastUsedAt ?? "never"}</td>
-                <td>
-                  {key.revokedAt ? (
-                    <span class="muted">—</span>
-                  ) : (
-                    <form class="inline" method="post" action={`/admin/keys/${key.id}/revoke`}>
-                      <button type="submit" class="danger">
-                        Revoke
-                      </button>
-                    </form>
-                  )}
-                </td>
-              </tr>
+              <>
+                <tr>
+                  <td>{key.name}</td>
+                  <td>
+                    <code>{key.keyPrefix}…</code>
+                  </td>
+                  <td>{key.allowedModels && key.allowedModels.length > 0 ? key.allowedModels.join(", ") : "all"}</td>
+                  <td>{key.createdAt}</td>
+                  <td>
+                    {key.revokedAt ? (
+                      <StatusPill tone="muted">revoked {key.revokedAt}</StatusPill>
+                    ) : (
+                      <StatusPill tone="ok">active</StatusPill>
+                    )}
+                  </td>
+                  <td>{key.lastUsedAt ?? "never"}</td>
+                  <td>
+                    {key.revokedAt ? (
+                      <span class="muted">—</span>
+                    ) : (
+                      <>
+                        <button type="button" class="row-toggle">
+                          Edit
+                        </button>{" "}
+                        <form class="inline" method="post" action={`/admin/keys/${key.id}/revoke`}>
+                          <button type="submit" class="danger">
+                            Revoke
+                          </button>
+                        </form>
+                      </>
+                    )}
+                  </td>
+                </tr>
+                {!key.revokedAt && (
+                  <tr class="detail-row key-edit-row" hidden>
+                    <td colspan={7}>
+                      <form class="key-edit-panel filters" method="post" action={`/admin/keys/${key.id}/allowed-models`}>
+                        <label>
+                          Allowed models
+                          <ModelPicker
+                            modelsByProvider={modelsByProvider}
+                            modelsUnreachable={modelsUnreachable}
+                            name="allowedModels"
+                            selected={new Set(key.allowedModels ?? [])}
+                          />
+                        </label>
+                        <button type="submit">Save allowed models</button>
+                      </form>
+                    </td>
+                  </tr>
+                )}
+              </>
             ))}
           </tbody>
         </table>
       </div>
+
+      <script dangerouslySetInnerHTML={{ __html: KEYS_SCRIPT }}></script>
     </Layout>
   );
 };
