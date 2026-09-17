@@ -149,6 +149,26 @@ describe("buildResponseObject", () => {
     expect(result.created_at).toBe(1_700_000_000);
   });
 
+  // Regression test: with `format: { type: "json_schema" }`, OpenCode
+  // returns the result on `info.structured` instead of as a text part -
+  // buildResponseObject must not silently produce an empty output_text
+  // when that happens.
+  test("structured output (json_schema format): output_text carries the stringified result even with no text parts", () => {
+    const info = makeInfo({ structured: { greeting: "hallo" } });
+    const result = buildResponseObject({ id: "resp_3", model: "openai/gpt-5.4", instructions: null, info, parts: [] });
+
+    expect(result.output_text).toBe('{"greeting":"hallo"}');
+    expect(result.output).toEqual([
+      {
+        id: "msg_msg_abc",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: '{"greeting":"hallo"}', annotations: [] }],
+      },
+    ]);
+  });
+
   test("completion with reasoning tokens and cache reads", () => {
     const info = makeInfo({ tokens: { total: 50, input: 10, output: 20, reasoning: 15, cache: { read: 5, write: 0 } } });
     const result = buildResponseObject({ id: "resp_1", model: "m", instructions: null, info, parts: [] });

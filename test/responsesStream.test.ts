@@ -170,6 +170,53 @@ describe("createResponsesStream - error path", () => {
   });
 });
 
+describe("createResponsesStream - structured output (json_schema format)", () => {
+  // Regression test: OpenCode returns a json_schema result on
+  // info.structured instead of as text parts - no message.part.updated
+  // event ever fires for it, only the terminal message.updated. Without
+  // special handling this streamed as an empty response text.
+  async function* structuredEvents(): AsyncGenerator<OpenCodeEvent> {
+    yield {
+      id: "evt1",
+      type: "message.updated",
+      properties: {
+        sessionID: SESSION_ID,
+        info: {
+          id: "msg1",
+          sessionID: SESSION_ID,
+          role: "assistant",
+          parentID: "",
+          modelID: "gpt-5.4",
+          providerID: "openai",
+          mode: "build",
+          agent: "build",
+          path: { cwd: "", root: "" },
+          cost: 0,
+          tokens: { total: 15, input: 5, output: 10 },
+          time: { created: 0, completed: 1 },
+          structured: { greeting: "hallo" },
+        },
+      },
+    } as OpenCodeEvent;
+  }
+
+  test("emits the structured result as a single stringified delta, then completes with it as output_text", async () => {
+    const { stream, done, firstOutcome } = createResponsesStream(structuredEvents(), SESSION_ID, "resp_struct", "openai/gpt-5.4", null);
+    const frames = await readFrames(stream);
+
+    const deltas = frames.filter((f) => f.type === "response.output_text.delta");
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0].delta).toBe('{"greeting":"hallo"}');
+
+    const completed = frames.find((f) => f.type === "response.completed");
+    expect(completed.response.output_text).toBe('{"greeting":"hallo"}');
+
+    const result = await done;
+    expect(result.fullText).toBe('{"greeting":"hallo"}');
+    expect(await firstOutcome).toEqual({ ok: true });
+  });
+});
+
 describe("createResponsesStream - feed ends without completion", () => {
   test("still closes cleanly and resolves done", async () => {
     async function* incompleteEvents(): AsyncGenerator<OpenCodeEvent> {

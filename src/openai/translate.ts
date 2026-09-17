@@ -104,12 +104,29 @@ export function extractText(parts: Part[]): string {
   return parts.filter(isTextPart).map((p) => p.text).join("");
 }
 
+/**
+ * With `format: { type: "json_schema" }`, OpenCode returns the actual
+ * result out-of-band on `info.structured` (a parsed object matching the
+ * schema) rather than as a text part - `parts`/`extractText` alone comes
+ * back empty in that case, even though the model did produce (and pay for)
+ * output. Real OpenAI Structured Outputs still hands the result back as a
+ * JSON *string* in `content`/`output_text` for the caller to parse
+ * themselves (same as plain `json_object` mode) - not a nested object -
+ * so this bridges the gap by stringifying `info.structured` when present.
+ */
+export function extractResponseContent(info: AssistantMessage, parts: Part[]): string {
+  if (info.structured !== undefined && info.structured !== null) {
+    return JSON.stringify(info.structured);
+  }
+  return extractText(parts);
+}
+
 export function assistantMessageToOpenAIResponse(
   model: string,
   info: AssistantMessage,
   parts: Part[]
 ): ChatCompletionResponse {
-  const content = extractText(parts);
+  const content = extractResponseContent(info, parts);
 
   const response: ChatCompletionResponse = {
     id: `chatcmpl-${info.id}`,

@@ -1,5 +1,5 @@
 import type { AssistantMessage, AssistantMessageError, OutputFormat, Part } from "../opencode/types";
-import { buildOpenCodeFormat, extractErrorMessage, extractText } from "./translate";
+import { buildOpenCodeFormat, extractErrorMessage, extractResponseContent } from "./translate";
 import type {
   ResponseErrorObject,
   ResponseInput,
@@ -99,7 +99,7 @@ export function buildResponseObject(args: {
     };
   }
 
-  const text = extractText(parts);
+  const text = extractResponseContent(info, parts);
   const outputItem: ResponseOutputMessageItem = {
     id: `msg_${info.id}`,
     type: "message",

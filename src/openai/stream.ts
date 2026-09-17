@@ -135,6 +135,17 @@ export function createOpenAIChatStream(
               };
             }
             if (info.time?.completed != null) {
+              // Structured output (format: json_schema) comes back on
+              // info.structured instead of as text parts, so no delta was
+              // ever emitted for it above - surface it as one final delta
+              // (stringified, like OpenAI's own json_object/json_schema
+              // modes hand the result back as JSON text) rather than
+              // silently closing the stream with empty content.
+              if (!fullText && !info.error && info.structured !== undefined && info.structured !== null) {
+                const structuredText = JSON.stringify(info.structured);
+                fullText = structuredText;
+                emitDelta(structuredText);
+              }
               // No-op if a delta or an error already settled this.
               settleFirstOutcome({ ok: true });
               emitFinish();
