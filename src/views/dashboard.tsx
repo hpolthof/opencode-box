@@ -1,14 +1,33 @@
 import type { FC } from "hono/jsx";
 import { Layout } from "./layout";
 import type { ModelUsage, AppUsage } from "../db/requests";
+import { formatCost } from "../pricing";
+
+interface ModelUsageWithCost extends ModelUsage {
+  estimatedCost: number | null;
+  costEstimated: boolean;
+}
 
 interface DashboardProps {
   totals: { requestsToday: number; requestsTotal: number; tokensToday: number; tokensTotal: number };
-  modelUsageToday: ModelUsage[];
-  modelUsageAll: ModelUsage[];
+  modelUsageToday: ModelUsageWithCost[];
+  modelUsageAll: ModelUsageWithCost[];
   appUsageToday: AppUsage[];
   appUsageAll: AppUsage[];
 }
+
+// Token counts can run into the millions, so they're rendered as raw digits
+// server-side and reformatted with thousands separators here - client-side,
+// like the Requests page's timestamps, so they follow the viewer's own
+// locale (comma vs period as the separator) rather than a hardcoded one.
+const SCRIPT = `
+(function () {
+  Array.prototype.forEach.call(document.querySelectorAll(".fmt-number"), function (el) {
+    var n = Number(el.textContent);
+    if (Number.isFinite(n)) el.textContent = n.toLocaleString();
+  });
+})();
+`;
 
 export const Dashboard: FC<DashboardProps> = ({ totals, modelUsageToday, modelUsageAll, appUsageToday, appUsageAll }) => {
   return (
@@ -24,11 +43,11 @@ export const Dashboard: FC<DashboardProps> = ({ totals, modelUsageToday, modelUs
         </div>
         <div class="stat-card">
           <div class="label">Tokens today</div>
-          <div class="value">{totals.tokensToday}</div>
+          <div class="value fmt-number">{totals.tokensToday}</div>
         </div>
         <div class="stat-card">
           <div class="label">Tokens total</div>
-          <div class="value">{totals.tokensTotal}</div>
+          <div class="value fmt-number">{totals.tokensTotal}</div>
         </div>
       </div>
 
@@ -43,11 +62,13 @@ export const Dashboard: FC<DashboardProps> = ({ totals, modelUsageToday, modelUs
 
       <h2>Usage by app (all time)</h2>
       <UsageByAppTable rows={appUsageAll} />
+
+      <script dangerouslySetInnerHTML={{ __html: SCRIPT }}></script>
     </Layout>
   );
 };
 
-const UsageByModelTable: FC<{ rows: ModelUsage[] }> = ({ rows }) => (
+const UsageByModelTable: FC<{ rows: ModelUsageWithCost[] }> = ({ rows }) => (
   <div class="table-card">
     <table>
       <thead>
@@ -55,12 +76,13 @@ const UsageByModelTable: FC<{ rows: ModelUsage[] }> = ({ rows }) => (
           <th>Model</th>
           <th>Requests</th>
           <th>Total tokens</th>
+          <th>Cost</th>
         </tr>
       </thead>
       <tbody>
         {rows.length === 0 && (
           <tr>
-            <td colspan={3} class="muted">
+            <td colspan={4} class="muted">
               No data
             </td>
           </tr>
@@ -69,7 +91,11 @@ const UsageByModelTable: FC<{ rows: ModelUsage[] }> = ({ rows }) => (
           <tr>
             <td class="mono">{row.model}</td>
             <td>{row.count}</td>
-            <td>{row.totalTokens ?? 0}</td>
+            <td class="fmt-number">{row.totalTokens ?? 0}</td>
+            <td class="mono">
+              {row.costEstimated && row.estimatedCost !== null ? "~" : ""}
+              {formatCost(row.estimatedCost)}
+            </td>
           </tr>
         ))}
       </tbody>

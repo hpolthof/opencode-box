@@ -119,6 +119,8 @@ export interface ModelUsage {
   model: string;
   count: number;
   totalTokens: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
 }
 
 export interface AppUsage {
@@ -129,8 +131,9 @@ export interface AppUsage {
 export function usageByModel(sinceToday = false): ModelUsage[] {
   const whereClause = sinceToday ? "WHERE created_at >= date('now')" : "";
   return db
-    .query<{ model: string; count: number; totalTokens: number | null }, []>(
-      `SELECT model, COUNT(*) as count, SUM(total_tokens) as totalTokens
+    .query<ModelUsage, []>(
+      `SELECT model, COUNT(*) as count, SUM(total_tokens) as totalTokens,
+              SUM(prompt_tokens) as promptTokens, SUM(completion_tokens) as completionTokens
        FROM requests ${whereClause} GROUP BY model ORDER BY count DESC`
     )
     .all();
