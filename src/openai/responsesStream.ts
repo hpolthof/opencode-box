@@ -1,6 +1,7 @@
 import { isMessagePartUpdated, isMessageUpdated, isTextPart } from "../opencode/types";
 import type { AssistantMessage, OpenCodeEvent, Part } from "../opencode/types";
 import { buildResponseObject } from "./responsesTranslate";
+import { toTokenUsage, type TokenUsage } from "./usage";
 import type {
   ResponseContentPartDoneEvent,
   ResponseObject,
@@ -8,12 +9,11 @@ import type {
   ResponseOutputMessageItem,
   ResponseOutputTextPart,
   ResponseStreamEvent,
-  ResponseUsage,
 } from "./responsesTypes";
 
 export interface ResponsesStreamDoneResult {
   fullText: string;
-  usage: ResponseUsage | null;
+  usage: TokenUsage | null;
   errorMessage?: string;
 }
 
@@ -219,7 +219,7 @@ export function createResponsesStream(
             ];
             const response = buildResponseObject({ id: responseId, model, instructions, info, parts: syntheticParts });
             send({ type: "response.completed", response, sequence_number: sequenceNumber++ });
-            finish({ fullText, usage: response.usage });
+            finish({ fullText, usage: info.tokens ? toTokenUsage(info.tokens) : null });
             return;
           }
         }

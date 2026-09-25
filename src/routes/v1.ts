@@ -27,6 +27,7 @@ import { createResponsesStream, type ResponsesStream } from "../openai/responses
 import type { ResponseCreateParams } from "../openai/responsesTypes";
 import type { ModelSummary, OpenCodeEvent, SessionPromptResponse } from "../opencode/client";
 import type { RequestLogEntry } from "../types";
+import { toTokenUsage, type TokenUsage } from "../openai/usage";
 
 export const v1Router = new Hono<ApiKeyAuthEnv>();
 
@@ -41,7 +42,9 @@ interface PendingLog {
   requestBody: string | null;
 }
 
-function baseLog(pending: PendingLog, start: number): Omit<RequestLogEntry, "status" | "httpStatus" | "errorMessage" | "responseBody" | "promptTokens" | "completionTokens" | "totalTokens"> {
+type TokenFields = "promptTokens" | "completionTokens" | "totalTokens" | "reasoningTokens" | "cacheReadTokens" | "cacheWriteTokens";
+
+function baseLog(pending: PendingLog, start: number): Omit<RequestLogEntry, "status" | "httpStatus" | "errorMessage" | "responseBody" | TokenFields> {
   return {
     apiKeyId: pending.apiKeyId,
     appName: pending.appName,
@@ -58,15 +61,18 @@ function logOk(
   start: number,
   httpStatus: number,
   responseBody: string,
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  usage?: TokenUsage | null
 ) {
   insertRequestLog({
     ...baseLog(pending, start),
     status: "ok",
     httpStatus,
-    promptTokens: usage?.prompt_tokens ?? null,
-    completionTokens: usage?.completion_tokens ?? null,
-    totalTokens: usage?.total_tokens ?? null,
+    promptTokens: usage?.promptTokens ?? null,
+    completionTokens: usage?.completionTokens ?? null,
+    totalTokens: usage?.totalTokens ?? null,
+    reasoningTokens: usage?.reasoningTokens ?? null,
+    cacheReadTokens: usage?.cacheReadTokens ?? null,
+    cacheWriteTokens: usage?.cacheWriteTokens ?? null,
     errorMessage: null,
     responseBody,
   });
@@ -80,6 +86,9 @@ function logError(pending: PendingLog, start: number, httpStatus: number, errorM
     promptTokens: null,
     completionTokens: null,
     totalTokens: null,
+    reasoningTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
     errorMessage,
     responseBody,
   });
@@ -431,7 +440,7 @@ v1Router.post("/chat/completions", async (c) => {
 
     const response = assistantMessageToOpenAIResponse(body.model, result.info, result.parts);
     const responseBody = JSON.stringify(response);
-    logOk(pending, start, 200, responseBody, response.usage);
+    logOk(pending, start, 200, responseBody, result.info.tokens ? toTokenUsage(result.info.tokens) : null);
     return c.json(response, 200);
   }
 
@@ -571,15 +580,7 @@ v1Router.post("/responses", async (c) => {
 
     const response = buildResponseObject({ id: `resp_${result.info.id}`, model: body.model, instructions, info: result.info, parts: result.parts });
     const responseBody = JSON.stringify(response);
-    logOk(
-      pending,
-      start,
-      200,
-      responseBody,
-      response.usage
-        ? { prompt_tokens: response.usage.input_tokens, completion_tokens: response.usage.output_tokens, total_tokens: response.usage.total_tokens }
-        : undefined
-    );
+    logOk(pending, start, 200, responseBody, result.info.tokens ? toTokenUsage(result.info.tokens) : null);
     return c.json(response, 200);
   }
 
@@ -613,15 +614,7 @@ v1Router.post("/responses", async (c) => {
       if (result.errorMessage) {
         logError(pending, start, 200, result.errorMessage, result.fullText);
       } else {
-        logOk(
-          pending,
-          start,
-          200,
-          result.fullText,
-          result.usage
-            ? { prompt_tokens: result.usage.input_tokens, completion_tokens: result.usage.output_tokens, total_tokens: result.usage.total_tokens }
-            : undefined
-        );
+        logOk(pending, start, 200, result.fullText, result.usage);
       }
     })
     .catch((err) => {

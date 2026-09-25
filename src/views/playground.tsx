@@ -131,6 +131,8 @@ const SCRIPT = `
     if (u) {
       usage.appendChild(pill("prompt: " + u.promptTokens));
       usage.appendChild(pill("completion: " + u.completionTokens));
+      if (u.reasoningTokens) usage.appendChild(pill("of which reasoning: " + u.reasoningTokens));
+      if (u.cacheReadTokens) usage.appendChild(pill("cached: " + u.cacheReadTokens));
       usage.appendChild(pill("total: " + u.totalTokens));
     }
     if (typeof latencyMs === "number") {

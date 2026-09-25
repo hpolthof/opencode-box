@@ -2,16 +2,11 @@ import { isMessagePartUpdated, isMessageUpdated, isTextPart } from "../opencode/
 import type { OpenCodeEvent } from "../opencode/types";
 import { extractErrorMessage } from "./translate";
 import type { ChatCompletionChunk } from "./types";
-
-export interface StreamUsage {
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_tokens: number;
-}
+import { toTokenUsage, type TokenUsage } from "./usage";
 
 export interface StreamDoneResult {
   fullText: string;
-  usage?: StreamUsage;
+  usage?: TokenUsage;
   errorMessage?: string;
 }
 
@@ -75,7 +70,7 @@ export function createOpenAIChatStream(
     async start(controller) {
       const partLengths = new Map<string, number>();
       let fullText = "";
-      let usage: StreamUsage | undefined;
+      let usage: TokenUsage | undefined;
       let errorMessage: string | undefined;
 
       const emitDelta = (content: string) => {
@@ -128,11 +123,7 @@ export function createOpenAIChatStream(
               settleFirstOutcome({ ok: false, message: errorMessage });
             }
             if (info.tokens) {
-              usage = {
-                prompt_tokens: info.tokens.input,
-                completion_tokens: info.tokens.output,
-                total_tokens: info.tokens.total,
-              };
+              usage = toTokenUsage(info.tokens);
             }
             if (info.time?.completed != null) {
               // Structured output (format: json_schema) comes back on

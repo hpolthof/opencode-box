@@ -141,7 +141,7 @@ describe("createResponsesStream - success path", () => {
 
     const result = await done;
     expect(result.fullText).toBe("Hello world");
-    expect(result.usage?.output_tokens).toBe(10);
+    expect(result.usage?.completionTokens).toBe(10);
     expect(result.errorMessage).toBeUndefined();
   });
 

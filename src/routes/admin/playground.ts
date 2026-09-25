@@ -3,6 +3,7 @@ import { insertRequestLog } from "../../db/requests";
 import { createSession, deleteSession, listModels, NO_TOOLS, sendMessage, sendPromptAsync, subscribeEvents } from "../../opencode/client";
 import { buildOpenCodeFormat, extractErrorMessage, extractText, parseModelId } from "../../openai/translate";
 import { isMessagePartUpdated, isMessageUpdated, isTextPart } from "../../opencode/types";
+import { toTokenUsage, type TokenUsage } from "../../openai/usage";
 import { Playground } from "../../views/playground";
 
 export const playgroundRouter = new Hono();
@@ -32,7 +33,7 @@ function logRun(
   stream: boolean,
   requestBody: string,
   outcome:
-    | { status: "ok"; httpStatus: number; responseBody: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } | null }
+    | { status: "ok"; httpStatus: number; responseBody: string; usage?: TokenUsage | null }
     | { status: "error"; httpStatus: number; errorMessage: string; responseBody?: string | null }
 ) {
   insertRequestLog({
@@ -48,6 +49,9 @@ function logRun(
     promptTokens: outcome.status === "ok" ? (outcome.usage?.promptTokens ?? null) : null,
     completionTokens: outcome.status === "ok" ? (outcome.usage?.completionTokens ?? null) : null,
     totalTokens: outcome.status === "ok" ? (outcome.usage?.totalTokens ?? null) : null,
+    reasoningTokens: outcome.status === "ok" ? (outcome.usage?.reasoningTokens ?? null) : null,
+    cacheReadTokens: outcome.status === "ok" ? (outcome.usage?.cacheReadTokens ?? null) : null,
+    cacheWriteTokens: outcome.status === "ok" ? (outcome.usage?.cacheWriteTokens ?? null) : null,
     errorMessage: outcome.status === "error" ? outcome.errorMessage : null,
     responseBody: outcome.status === "ok" ? outcome.responseBody : (outcome.responseBody ?? null),
   });
@@ -150,13 +154,7 @@ playgroundRouter.post("/playground/run", async (c) => {
 
       const content = extractText(result.parts);
       const structured = result.info.structured;
-      const usage = result.info.tokens
-        ? {
-            promptTokens: result.info.tokens.input,
-            completionTokens: result.info.tokens.output,
-            totalTokens: result.info.tokens.total,
-          }
-        : null;
+      const usage = result.info.tokens ? toTokenUsage(result.info.tokens) : null;
 
       const responsePayload = { content, structured, usage, latencyMs: Date.now() - start };
       logRun(start, modelString, variant ?? null, false, rawBody, { status: "ok", httpStatus: 200, responseBody: JSON.stringify(responsePayload), usage });
@@ -200,7 +198,7 @@ playgroundRouter.post("/playground/run", async (c) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
       };
 
-      const finish = (outcome: { status: "ok"; responseBody: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null } | { status: "error"; message: string }) => {
+      const finish = (outcome: { status: "ok"; responseBody: string; usage: TokenUsage | null } | { status: "error"; message: string }) => {
         abortController.abort();
         controller.close();
         if (outcome.status === "ok") {
@@ -244,9 +242,7 @@ playgroundRouter.post("/playground/run", async (c) => {
                 finish({ status: "error", message });
                 return;
               }
-              const usage = info.tokens
-                ? { promptTokens: info.tokens.input, completionTokens: info.tokens.output, totalTokens: info.tokens.total }
-                : null;
+              const usage = info.tokens ? toTokenUsage(info.tokens) : null;
               const donePayload = { type: "done", content: fullText, structured: info.structured ?? null, usage, latencyMs: Date.now() - start };
               send(donePayload);
               finish({ status: "ok", responseBody: JSON.stringify(donePayload), usage });

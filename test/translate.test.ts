@@ -87,3 +87,25 @@ describe("assistantMessageToOpenAIResponse", () => {
     expect(response.choices[0]!.message.content).toBe('{"greeting":"hallo"}');
   });
 });
+
+describe("assistantMessageToOpenAIResponse usage", () => {
+  // OpenCode reports reasoning and cached input as separate buckets (its
+  // `total` is the sum of all of them); OpenAI's completion_tokens includes
+  // reasoning and prompt_tokens includes cached input.
+  test("folds reasoning into completion_tokens and cache into prompt_tokens", () => {
+    const info = baseInfo({ tokens: { total: 26329, input: 1162, output: 44, reasoning: 35, cache: { read: 25088, write: 0 } } });
+    const response = assistantMessageToOpenAIResponse("m", info, []);
+    expect(response.usage).toEqual({
+      prompt_tokens: 26250,
+      completion_tokens: 79,
+      total_tokens: 26329,
+      prompt_tokens_details: { cached_tokens: 25088 },
+      completion_tokens_details: { reasoning_tokens: 35 },
+    });
+  });
+
+  test("no reasoning or cache -> no detail fields", () => {
+    const response = assistantMessageToOpenAIResponse("m", baseInfo(), []);
+    expect(response.usage).toEqual({ prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 });
+  });
+});

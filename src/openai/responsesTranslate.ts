@@ -1,5 +1,6 @@
 import type { AssistantMessage, AssistantMessageError, OutputFormat, Part } from "../opencode/types";
 import { buildOpenCodeFormat, extractErrorMessage, extractResponseContent } from "./translate";
+import { toTokenUsage } from "./usage";
 import type {
   ResponseErrorObject,
   ResponseInput,
@@ -108,13 +109,14 @@ export function buildResponseObject(args: {
     content: [{ type: "output_text", text, annotations: [] } satisfies ResponseOutputTextPart],
   };
 
-  const usage: ResponseUsage | null = info.tokens
+  const tokens = info.tokens ? toTokenUsage(info.tokens) : null;
+  const usage: ResponseUsage | null = tokens
     ? {
-        input_tokens: info.tokens.input,
-        input_tokens_details: { cached_tokens: info.tokens.cache?.read ?? 0 },
-        output_tokens: info.tokens.output,
-        output_tokens_details: { reasoning_tokens: info.tokens.reasoning ?? 0 },
-        total_tokens: info.tokens.total,
+        input_tokens: tokens.promptTokens,
+        input_tokens_details: { cached_tokens: tokens.cacheReadTokens },
+        output_tokens: tokens.completionTokens,
+        output_tokens_details: { reasoning_tokens: tokens.reasoningTokens },
+        total_tokens: tokens.totalTokens,
       }
     : null;
 

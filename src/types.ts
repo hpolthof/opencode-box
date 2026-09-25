@@ -37,6 +37,11 @@ export interface RequestLogEntry {
   promptTokens: number | null;
   completionTokens: number | null;
   totalTokens: number | null;
+  /** Included in `completionTokens`. Null on rows logged before this was tracked. */
+  reasoningTokens: number | null;
+  /** Included in `promptTokens`. Null on rows logged before this was tracked. */
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
   latencyMs: number;
   errorMessage: string | null;
   requestBody: string | null;

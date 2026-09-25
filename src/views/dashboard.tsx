@@ -76,13 +76,14 @@ const UsageByModelTable: FC<{ rows: ModelUsageWithCost[] }> = ({ rows }) => (
           <th>Model</th>
           <th>Requests</th>
           <th>Total tokens</th>
+          <th>Reasoning</th>
           <th>Cost</th>
         </tr>
       </thead>
       <tbody>
         {rows.length === 0 && (
           <tr>
-            <td colspan={4} class="muted">
+            <td colspan={5} class="muted">
               No data
             </td>
           </tr>
@@ -92,6 +93,7 @@ const UsageByModelTable: FC<{ rows: ModelUsageWithCost[] }> = ({ rows }) => (
             <td class="mono">{row.model}</td>
             <td>{row.count}</td>
             <td class="fmt-number">{row.totalTokens ?? 0}</td>
+            <td class="fmt-number">{row.reasoningTokens ?? 0}</td>
             <td class="mono">
               {row.costEstimated && row.estimatedCost !== null ? "~" : ""}
               {formatCost(row.estimatedCost)}

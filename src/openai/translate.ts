@@ -1,6 +1,7 @@
 import type { AssistantMessage, AssistantMessageError, OutputFormat, Part } from "../opencode/types";
 import { isTextPart } from "../opencode/types";
 import type { ChatCompletionResponse, ChatMessage, ResponseFormat } from "./types";
+import { toTokenUsage } from "./usage";
 
 /**
  * OpenCode wraps provider-side failures (e.g. "this model isn't available on
@@ -143,13 +144,17 @@ export function assistantMessageToOpenAIResponse(
   };
 
   if (info.tokens) {
+    const usage = toTokenUsage(info.tokens);
     response.usage = {
-      prompt_tokens: info.tokens.input,
-      completion_tokens: info.tokens.output,
-      total_tokens: info.tokens.total,
+      prompt_tokens: usage.promptTokens,
+      completion_tokens: usage.completionTokens,
+      total_tokens: usage.totalTokens,
     };
-    if (info.tokens.reasoning) {
-      response.usage.completion_tokens_details = { reasoning_tokens: info.tokens.reasoning };
+    if (usage.cacheReadTokens) {
+      response.usage.prompt_tokens_details = { cached_tokens: usage.cacheReadTokens };
+    }
+    if (usage.reasoningTokens) {
+      response.usage.completion_tokens_details = { reasoning_tokens: usage.reasoningTokens };
     }
   }
 

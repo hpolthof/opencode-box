@@ -172,10 +172,12 @@ describe("buildResponseObject", () => {
   test("completion with reasoning tokens and cache reads", () => {
     const info = makeInfo({ tokens: { total: 50, input: 10, output: 20, reasoning: 15, cache: { read: 5, write: 0 } } });
     const result = buildResponseObject({ id: "resp_1", model: "m", instructions: null, info, parts: [] });
+    // OpenCode counts reasoning and cached input separately from output/input;
+    // OpenAI's output_tokens/input_tokens include them.
     expect(result.usage).toEqual({
-      input_tokens: 10,
+      input_tokens: 15,
       input_tokens_details: { cached_tokens: 5 },
-      output_tokens: 20,
+      output_tokens: 35,
       output_tokens_details: { reasoning_tokens: 15 },
       total_tokens: 50,
     });

@@ -477,6 +477,17 @@ export const RequestsLog: FC<RequestsLogProps> = ({ rows, total, pageSize, filte
                               <span class="detail-stat-value mono">{row.completionTokens ?? "-"}</span>
                             </div>
                             <div class="detail-stat">
+                              <span class="detail-stat-label">Reasoning tokens</span>
+                              <span class="detail-stat-value mono">{row.reasoningTokens ?? "-"}</span>
+                            </div>
+                            <div class="detail-stat">
+                              <span class="detail-stat-label">Cached tokens</span>
+                              <span class="detail-stat-value mono">
+                                {row.cacheReadTokens ?? "-"}
+                                {row.cacheWriteTokens ? ` (+${row.cacheWriteTokens} written)` : ""}
+                              </span>
+                            </div>
+                            <div class="detail-stat">
                               <span class="detail-stat-label">Total tokens</span>
                               <span class="detail-stat-value mono">{row.totalTokens ?? "-"}</span>
                             </div>

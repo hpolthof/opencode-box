@@ -20,6 +20,9 @@ interface RequestRow {
   prompt_tokens: number | null;
   completion_tokens: number | null;
   total_tokens: number | null;
+  reasoning_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
   latency_ms: number;
   error_message: string | null;
   request_body: string | null;
@@ -40,6 +43,9 @@ function rowToEntry(row: RequestRow): RequestLogRow {
     promptTokens: row.prompt_tokens,
     completionTokens: row.completion_tokens,
     totalTokens: row.total_tokens,
+    reasoningTokens: row.reasoning_tokens,
+    cacheReadTokens: row.cache_read_tokens,
+    cacheWriteTokens: row.cache_write_tokens,
     latencyMs: row.latency_ms,
     errorMessage: row.error_message,
     requestBody: row.request_body,
@@ -52,9 +58,10 @@ export function insertRequestLog(entry: RequestLogEntry): void {
   db.query(
     `INSERT INTO requests (
        api_key_id, app_name, model, variant, stream, status, http_status,
-       prompt_tokens, completion_tokens, total_tokens, latency_ms,
+       prompt_tokens, completion_tokens, total_tokens,
+       reasoning_tokens, cache_read_tokens, cache_write_tokens, latency_ms,
        error_message, request_body, response_body
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     entry.apiKeyId,
     entry.appName,
@@ -66,6 +73,9 @@ export function insertRequestLog(entry: RequestLogEntry): void {
     entry.promptTokens,
     entry.completionTokens,
     entry.totalTokens,
+    entry.reasoningTokens,
+    entry.cacheReadTokens,
+    entry.cacheWriteTokens,
     entry.latencyMs,
     entry.errorMessage,
     truncate(entry.requestBody),
@@ -121,6 +131,7 @@ export interface ModelUsage {
   totalTokens: number | null;
   promptTokens: number | null;
   completionTokens: number | null;
+  reasoningTokens: number | null;
 }
 
 export interface AppUsage {
@@ -133,7 +144,8 @@ export function usageByModel(sinceToday = false): ModelUsage[] {
   return db
     .query<ModelUsage, []>(
       `SELECT model, COUNT(*) as count, SUM(total_tokens) as totalTokens,
-              SUM(prompt_tokens) as promptTokens, SUM(completion_tokens) as completionTokens
+              SUM(prompt_tokens) as promptTokens, SUM(completion_tokens) as completionTokens,
+              SUM(reasoning_tokens) as reasoningTokens
        FROM requests ${whereClause} GROUP BY model ORDER BY count DESC`
     )
     .all();
