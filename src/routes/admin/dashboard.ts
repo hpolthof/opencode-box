@@ -22,7 +22,7 @@ dashboardRouter.get("/", async (c) => {
       const rate = rateByModel.get(row.model) ?? resolveModelRate(undefined, row.model);
       return {
         ...row,
-        estimatedCost: estimateCost(rate, row.promptTokens, row.completionTokens),
+        estimatedCost: estimateCost(rate, row),
         costEstimated: rate?.estimated ?? false,
       };
     });

@@ -132,6 +132,8 @@ export interface ModelUsage {
   promptTokens: number | null;
   completionTokens: number | null;
   reasoningTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
 }
 
 export interface AppUsage {
@@ -145,7 +147,8 @@ export function usageByModel(sinceToday = false): ModelUsage[] {
     .query<ModelUsage, []>(
       `SELECT model, COUNT(*) as count, SUM(total_tokens) as totalTokens,
               SUM(prompt_tokens) as promptTokens, SUM(completion_tokens) as completionTokens,
-              SUM(reasoning_tokens) as reasoningTokens
+              SUM(reasoning_tokens) as reasoningTokens, SUM(cache_read_tokens) as cacheReadTokens,
+              SUM(cache_write_tokens) as cacheWriteTokens
        FROM requests ${whereClause} GROUP BY model ORDER BY count DESC`
     )
     .all();

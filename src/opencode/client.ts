@@ -200,7 +200,7 @@ export interface ModelSummary {
   /** Ids of the model's configured variants (e.g. reasoning effort presets), if any. */
   variants?: string[];
   /** $/1M-token rate as reported by OpenCode itself, if any (may be `{input:0,output:0}` - see src/pricing.ts). */
-  cost?: { input?: number; output?: number };
+  cost?: { input?: number; output?: number; cache?: { read?: number; write?: number } };
 }
 
 const MODEL_CACHE_TTL_MS = 30_000;
@@ -230,7 +230,7 @@ export async function listModels(): Promise<ModelSummary[]> {
       name: m.name,
       reasoning: m.capabilities?.reasoning === true,
       ...(variants && variants.length > 0 ? { variants } : {}),
-      ...(cost ? { cost: { input: cost.input, output: cost.output } } : {}),
+      ...(cost ? { cost: { input: cost.input, output: cost.output, cache: cost.cache } } : {}),
     });
   }
 
@@ -252,7 +252,7 @@ export async function listModels(): Promise<ModelSummary[]> {
         name: model.name,
         reasoning: model.capabilities?.reasoning === true,
         ...(variants.length > 0 ? { variants } : {}),
-        ...(model.cost ? { cost: { input: model.cost.input, output: model.cost.output } } : {}),
+        ...(model.cost ? { cost: { input: model.cost.input, output: model.cost.output, cache: model.cost.cache } } : {}),
       });
     }
   }

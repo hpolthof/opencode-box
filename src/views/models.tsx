@@ -100,7 +100,10 @@ export const Models: FC<ModelsProps> = ({ models, unreachable }) => {
                       <td class="mono">{model.id}</td>
                       <td class="mono">{model.providerID}</td>
                       <td class="mono">
-                        {rate ? `${rate.estimated ? "~" : ""}$${rate.input.toFixed(2)} / $${rate.output.toFixed(2)}` : "-"}
+                        {rate
+                          ? `${rate.estimated ? "~" : ""}$${rate.input.toFixed(2)} / $${rate.output.toFixed(2)}` +
+                            (rate.cacheRead !== rate.input ? ` (cached $${rate.cacheRead.toFixed(3)})` : "")
+                          : "-"}
                       </td>
                     </tr>
                   );
