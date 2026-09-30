@@ -1,0 +1,46 @@
+name: Add version tags to an existing image
+
+# Publishes an already-built image under release tags without rebuilding
+# it - e.g. to give the last image of a release line (built before release
+# tags existed) its X.Y.Z / X.Y / X tags. Run it from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Existing image tag to publish again, e.g. a short commit sha"
+        required: true
+      version:
+        description: "Release version for it, without the v (e.g. 1.0.0)"
+        required: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Tag X.Y.Z, X.Y and X
+        env:
+          SOURCE: ${{ inputs.source }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "version must be X.Y.Z"; exit 1; fi
+          MINOR="${VERSION%.*}"
+          MAJOR="${VERSION%%.*}"
+          docker buildx imagetools create \
+            -t "$IMAGE:$VERSION" -t "$IMAGE:$MINOR" -t "$IMAGE:$MAJOR" \
+            "$IMAGE:$SOURCE"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"

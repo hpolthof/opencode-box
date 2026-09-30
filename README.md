@@ -11,15 +11,27 @@ container.
 > The gateway used to front [OpenCode](https://opencode.ai) (`opencode serve`); that backend has been
 > replaced by pi-ai. The project keeps its name.
 
-A Docker image is built and published to `ghcr.io/hpolthof/opencode-box` automatically on every
-push to `main` (see `.github/workflows/docker-publish.yml`).
+## Versions
+
+Releases follow [semantic versioning](https://semver.org) and are published as Docker images on
+`ghcr.io/hpolthof/opencode-box` (see `.github/workflows/docker-publish.yml`):
+
+| Image tag | What it is |
+| --- | --- |
+| `2.0.0`, `2.0`, `2`, `latest` | Version 2: the pi-ai gateway described here. `latest` is always the newest release. |
+| `1.0.0`, `1.0`, `1` | Version 1: the original gateway in front of OpenCode (`opencode serve`). Kept available; git tag `v1.0.0`. |
+| `main`, `<short sha>` | Unreleased builds of the `main` branch, for testing. |
+
+Pin a server to a major version (e.g. `:2`) to get fixes without breaking changes. A release is
+made by pushing a `vX.Y.Z` git tag; `.github/workflows/retag-image.yml` can publish an existing image
+under release tags without rebuilding it.
 
 ## Build & run
 
 Pull the published image:
 
 ```bash
-docker pull ghcr.io/hpolthof/opencode-box:latest
+docker pull ghcr.io/hpolthof/opencode-box:2
 ```
 
 Or build it yourself:
