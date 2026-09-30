@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { listCatalogModels } from "../../catalog";
 import { insertRequestLog } from "../../db/requests";
 import { parseModelId } from "../../openai/translate";
@@ -171,8 +172,9 @@ async function runModel(
   if (!stream) {
     const result = await piComplete(target, request, PI_PLAYGROUND_TIMEOUT_MS);
     if (!result.ok) {
-      logRun(start, modelString, variant ?? null, false, rawBody, { status: "error", httpStatus: 502, errorMessage: result.message });
-      return c.json({ error: result.message }, 502);
+      const { status, message } = result.error;
+      logRun(start, modelString, variant ?? null, false, rawBody, { status: "error", httpStatus: status, errorMessage: message });
+      return c.json({ error: message }, status as ContentfulStatusCode);
     }
     const content = assistantText(result.message);
     const usage = piUsageToTokenUsage(result.message.usage);
@@ -183,8 +185,9 @@ async function runModel(
 
   const opened = await piOpenStream(target, request);
   if (!opened.ok) {
-    logRun(start, modelString, variant ?? null, true, rawBody, { status: "error", httpStatus: 502, errorMessage: opened.message });
-    return c.json({ error: opened.message }, 502);
+    const { status, message } = opened.error;
+    logRun(start, modelString, variant ?? null, true, rawBody, { status: "error", httpStatus: status, errorMessage: message });
+    return c.json({ error: message }, status as ContentfulStatusCode);
   }
   const encoder = new TextEncoder();
   const readable = new ReadableStream<Uint8Array>({
