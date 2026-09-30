@@ -12,21 +12,22 @@
 // ---------------------------------------------------------------------------
 
 export interface ResponseInputTextPart {
-  type: "input_text";
+  /** "output_text" appears on assistant items replayed from an earlier response. */
+  type: "input_text" | "output_text";
   text: string;
 }
 
 /** A single item in the structured (array) form of `input`. Only the "message" variant is supported - the other 33 variants in OpenAI's union (function_call_output, computer_call, mcp_call, ...) all require tool-calling, which this gateway does not offer. */
 export interface ResponseInputMessageItem {
   type?: "message";
-  role: "user" | "system" | "developer";
+  role: "user" | "assistant" | "system" | "developer";
   content: string | ResponseInputTextPart[];
 }
 
 export type ResponseInput = string | ResponseInputMessageItem[];
 
 export interface ReasoningParam {
-  /** "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" - forwarded verbatim as OpenCode's `variant`. Values are model-defined, not a fixed enum, so this is typed as a plain string. */
+  /** "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" - the model's reasoning level, validated against its supported levels. Model-defined, not a fixed enum, so typed as a plain string. */
   effort?: string;
 }
 

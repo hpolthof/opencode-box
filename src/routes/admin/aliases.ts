@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { createAlias, deleteAlias, listAliases } from "../../db/modelAliases";
 import { listCatalogModels } from "../../catalog";
-import type { ModelSummary } from "../../opencode/client";
+import type { ModelSummary } from "../../catalog";
 import { Aliases } from "../../views/aliases";
 import type { ModelAliasMode, ModelAliasTarget } from "../../types";
 

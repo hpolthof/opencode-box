@@ -1,9 +1,15 @@
 # opencode-box
 
-An OpenAI Chat Completions-compatible API gateway in front of [OpenCode](https://opencode.ai),
-the sst/opencode AI coding-agent CLI. Everything - the gateway, the OpenCode server it manages,
-and a SQLite-backed admin dashboard for API keys and request logs - runs as a single process
-inside one Docker container.
+An OpenAI-compatible API gateway (`/v1/chat/completions`, `/v1/responses`, `/v1/models`) in front of
+OpenAI, Anthropic and OpenRouter - including ChatGPT and Claude Pro/Max subscriptions. Providers are
+called in-process through [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai),
+so requests go upstream with only what the client sent: no agent system prompt, the conversation as
+real turns, and streaming passed through token by token. The gateway and a SQLite-backed admin
+dashboard (API keys, provider logins, aliases, request logs) run as a single process in one Docker
+container.
+
+> The gateway used to front [OpenCode](https://opencode.ai) (`opencode serve`); that backend has been
+> replaced by pi-ai. The project keeps its name.
 
 A Docker image is built and published to `ghcr.io/hpolthof/opencode-box` automatically on every
 push to `main` (see `.github/workflows/docker-publish.yml`).
@@ -23,16 +29,16 @@ docker compose build
 docker compose up -d
 ```
 
-Required environment variables (put them in a `.env` file next to `docker-compose.yml`, or export
-them in your shell - `docker compose` reads a `.env` file automatically):
+Environment variables (put them in a `.env` file next to `docker-compose.yml`, or export them in
+your shell - `docker compose` reads a `.env` file automatically):
 
-| Variable                | Required | Description                                                        |
-| ------------------------ | -------- | -------------------------------------------------------------------- |
-| `ADMIN_PASSWORD`         | yes      | Password for the `/admin` dashboard.                                |
-| `ADMIN_SESSION_SECRET`   | yes      | Long random string used to sign the admin session cookie.          |
-| `ANTHROPIC_API_KEY`      | no       | Passed through to the OpenCode process if you reference it from `opencode.json`; also enables `pi/anthropic/...` models. |
-| `OPENAI_API_KEY`         | no       | Same, for OpenAI (and `pi/openai/...` models).                     |
-| `OPENROUTER_API_KEY`     | no       | Same, for OpenRouter.                                               |
+| Variable               | Required | Description                                                                          |
+| ---------------------- | -------- | ------------------------------------------------------------------------------------ |
+| `ADMIN_PASSWORD`       | yes      | Password for the `/admin` dashboard.                                                 |
+| `ADMIN_SESSION_SECRET` | yes      | Long random string used to sign the admin session cookie.                            |
+| `OPENAI_API_KEY`       | no       | OpenAI API key. Can also be set (or replaced by a ChatGPT sign-in) in the dashboard. |
+| `ANTHROPIC_API_KEY`    | no       | Same, for Anthropic (or a Claude Pro/Max sign-in).                                   |
+| `OPENROUTER_API_KEY`   | no       | Same, for OpenRouter.                                                                |
 
 The container fails fast (exits immediately with an error) if `ADMIN_PASSWORD` or
 `ADMIN_SESSION_SECRET` are missing.
@@ -40,70 +46,78 @@ The container fails fast (exits immediately with an error) if `ADMIN_PASSWORD` o
 ## First boot
 
 1. Visit `http://<host>:8080/admin` and log in with `ADMIN_PASSWORD`.
-2. Create your first API key on the Keys page. **It is shown once - copy it immediately.**
-3. Configure at least one model provider for OpenCode itself:
+2. On **Providers**, connect at least one provider:
+   - **Set API key** - paste an OpenAI, Anthropic or OpenRouter API key.
+   - **Sign in** with a subscription account: *Sign in with ChatGPT*, *Anthropic (Claude Pro/Max)*
+     or *Sign in with OpenRouter*. The sign-in page opens the provider's login in a new tab. When
+     the login ends on a page that cannot be reached (a `localhost` address inside the container),
+     copy that final URL from the browser's address bar and paste it back on the sign-in page.
 
-   - **API-key-based providers** (Anthropic, OpenAI, OpenRouter, etc.): set the matching env var
-     above, then reference it from an `opencode.json` config using OpenCode's `{env:VAR_NAME}`
-     interpolation syntax. See the
-     [OpenCode provider configuration docs](https://opencode.ai/docs/providers/) for the exact
-     format. This file should live at `/data/opencode-home/.config/opencode/opencode.json` inside
-     the container (i.e. `./data/opencode-home/.config/opencode/opencode.json` on the host) so it
-     survives container restarts.
-
-   - **Subscription/OAuth providers** (ChatGPT Plus, Claude Pro, GitHub Copilot, etc.): these
-     require a one-time interactive login that cannot be automated or baked into the image. Run:
-
-     ```bash
-     docker exec -it <container_name> opencode auth login
-     ```
-
-     and follow the prompts. Credentials persist under `/data/opencode-home`, so you only need to
-     do this once per deployment (until the credentials expire or you wipe the volume).
+   A provider has one credential at a time: setting an API key replaces a sign-in and vice versa.
+   Credentials set in the dashboard take precedence over the environment variables above. OAuth
+   tokens are refreshed automatically.
+3. Create an API key on the **Keys** page. **It is shown once - copy it immediately.**
 
 ## Using the API
 
-Model IDs are `provider/model` strings (e.g. `anthropic/claude-sonnet-4-5`). List the models
-OpenCode has configured with:
+Model IDs are `provider/model` strings, e.g. `openai/gpt-5.6-luna`,
+`anthropic/claude-sonnet-4-5` or `openrouter/meta-llama/llama-3.3-70b-instruct`. List what the
+connected providers offer (plus your aliases) with:
 
 ```bash
 curl http://localhost:8080/v1/models \
   -H "Authorization: Bearer <your-api-key>"
 ```
 
-Non-streaming chat completion:
+Chat completion (add `"stream": true` to stream it):
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer <your-api-key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "anthropic/claude-sonnet-4-5",
+    "model": "openai/gpt-5.6-luna",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
-Streaming chat completion:
+Responses API:
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:8080/v1/responses \
   -H "Authorization: Bearer <your-api-key>" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "anthropic/claude-sonnet-4-5",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'
+  -d '{"model": "openai/gpt-5.6-luna", "instructions": "Be brief.", "input": "Hello!"}'
 ```
+
+- **Structured output**: `response_format: {"type": "json_schema", ...}` (chat) or
+  `text.format` (responses) is mapped to each provider's native structured output (OpenAI
+  `response_format` / `text.format`, Anthropic `output_config.format`), streaming or not.
+- **Reasoning**: `reasoning_effort` (chat), `reasoning.effort` (responses) or a `#level` suffix on the
+  model id: `none` (off; `off` works too), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` - as
+  far as the model supports them (`GET /v1/models` lists them per model as `variants`). Without one,
+  a request gets as little reasoning as the model allows: `none` where it can be switched off,
+  otherwise its lowest level. The level used is recorded in the request log.
+- **Usage**: non-streaming responses carry `usage`; for streaming chat completions, send
+  `stream_options: {"include_usage": true}` to get a final usage chunk.
+- **ChatGPT subscription**: with *Sign in with ChatGPT*, only the models the subscription includes
+  are offered (OpenAI rejects the others); an OpenAI API key exposes the full OpenAI catalog.
+
+## Aliases
+
+An alias (Admin > Aliases) is a client-facing model name that maps to one or more
+`provider/model` + reasoning-level targets, tried in priority order or in a random order per request.
+A target that fails (provider error, unavailable, no first token within 120s) falls over to the next.
 
 ## Admin dashboard
 
-- **Dashboard** - at-a-glance usage overview.
-- **Keys** - create and revoke API keys.
-- **Requests** - recent request log (model, status, latency, tokens).
-- **Providers** - status of the providers OpenCode currently has configured.
-- **Terminal** - a full interactive shell inside the container, in the browser. Same trust level as
-  `docker exec -it <container> bash` - anyone with the admin password can run arbitrary commands.
+- **Dashboard** - at-a-glance usage and estimated cost.
+- **Playground** - try any model, streaming or not, with an optional JSON schema.
+- **Keys** - create and revoke API keys, optionally restricted to certain models/aliases.
+- **Requests** - request log (model, reasoning level, status, latency, tokens, cost).
+- **Providers** - connect providers with an API key or a subscription sign-in.
+- **Models** - every model the connected providers offer, with pricing.
+- **Aliases** - see above.
 - **Maintenance** - keeps the gateway's own SQLite database from growing unbounded: purge request
   logs (by age or all at once), purge old revoked API keys, set a retention period so purging runs
   automatically every hour, vacuum the database to reclaim disk space, and export the request log
@@ -111,68 +125,32 @@ curl http://localhost:8080/v1/chat/completions \
   clears just the stored request/response bodies instead of deleting the row, so token/latency/model
   stats stay intact forever while the bulk of the storage (the bodies) still gets freed.
 
-## v1 limitations
+## Limitations
 
 - No OpenAI function/tool-calling proxying.
-- No `/v1/embeddings`.
-- No legacy `/v1/completions`.
-- Each chat completion call maps to a brand-new, short-lived OpenCode session - there is no
-  server-side conversation memory beyond what the client sends in each call's `messages` array.
-
-## Experimental: pi-ai backend (proof of concept)
-
-Model ids starting with `pi/` - e.g. `pi/anthropic/claude-sonnet-4-5` or `pi/openai/gpt-5-mini#low` -
-bypass OpenCode on `POST /v1/chat/completions` and call the provider in-process through
-[`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai). Unlike the OpenCode
-path, no agent system prompt is added (only your own system messages go upstream), the `messages`
-history is sent as real turns instead of one flattened transcript, and streaming is passed through
-token by token.
-
-- Providers: Anthropic, OpenAI and GitHub Copilot. Sign in from **Admin > Providers** (Claude
-  Pro/Max, ChatGPT or Copilot subscription via OAuth - the sign-in page walks through the auth URL
-  or device code and takes the pasted redirect URL), or set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
-  in the gateway's own environment. A dashboard sign-in wins over an env key. OAuth credentials are
-  stored in the gateway's SQLite database (`pi_credentials`) and refreshed automatically. Models show
-  up in `GET /v1/models` (owned by `pi-ai`) once their provider has credentials.
-- `reasoning_effort` (or a `#level` suffix) takes pi-ai's levels: `none` (reasoning off; `off` works
-  too), `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, as far as the model supports them.
-- `response_format: json_schema` is mapped to each API's native structured output (OpenAI
-  `response_format` / `text.format`, Anthropic `output_config.format`).
-- `stream_options.include_usage` adds a final usage chunk.
-- pi models appear everywhere OpenCode models do: the Models, Keys (allowed models), Aliases and
-  Playground pages, and as alias targets (failover works across OpenCode and pi-ai targets).
-- With **Sign in with ChatGPT**, only the models a ChatGPT subscription includes are offered (others
-  are rejected by OpenAI); an `OPENAI_API_KEY` exposes the full OpenAI catalog.
-- Not yet: `/v1/responses`, tool calling.
-
-## Reasoning level when none is given
-
-A request without `reasoning_effort` / `#variant` gets as little reasoning as the model allows, for
-OpenCode and pi-ai models alike (OpenCode's own default would be e.g. `medium` for GPT-5.x):
-reasoning off (`none`) where the model supports that, otherwise its lowest level (`minimal` or
-`low`). Models that only offer extra thinking budgets (`high`/`max`, e.g. Claude 4.5 or Gemini 2.5)
-get no variant, which is already their minimum. The level used is recorded in the request log, and
-the Playground's "Default" option shows it per model.
+- No `/v1/embeddings`, no legacy `/v1/completions`.
+- Stateless: no `previous_response_id`; clients send the full conversation on every call.
+- `json_object` response format is passed through to OpenAI and OpenRouter only; Anthropic ignores it.
+- Using Claude Pro/Max or ChatGPT subscriptions through a third-party gateway may conflict with the
+  provider's terms of service - check them before relying on it.
 
 ## Data & persistence
 
-Everything that needs to survive a restart lives under `/data`, which `docker-compose.yml` binds
-to `./data` on the host:
+Everything that needs to survive a restart lives in `/data/opencode-box.sqlite` (bound to `./data`
+on the host by `docker-compose.yml`): API keys, provider credentials (API keys and OAuth tokens,
+stored unencrypted - protect the volume accordingly), aliases, settings and request logs. Do not
+delete it unless you intend to lose all of that.
 
-- `/data/opencode-box.sqlite` - the gateway's own database (API keys, request logs).
-- `/data/opencode-home` - `HOME` for the spawned `opencode serve` process, i.e. its config
-  (`opencode.json`), provider credentials, and any other OpenCode state.
-
-Do not delete this directory unless you intend to lose your API keys, request history, and
-provider logins.
+Upgrading from the OpenCode-based version: the old `/data/opencode-home` directory is no longer
+used and can be removed; provider logins have to be redone once in the dashboard. Aliases, key
+allow-lists and logs that referenced `pi/<provider>/<model>` ids from the pi-ai proof of concept
+are migrated to the plain `provider/model` form automatically.
 
 ## Local development
-
-Requires a local `opencode` binary on `PATH` (install via `curl -fsSL https://opencode.ai/install | bash`).
 
 ```bash
 bun install
 cp .env.example .env   # then fill in ADMIN_PASSWORD / ADMIN_SESSION_SECRET
 bun run dev
-bun test
+ADMIN_PASSWORD=test-password ADMIN_SESSION_SECRET=x DB_PATH=/tmp/test.sqlite bun test
 ```

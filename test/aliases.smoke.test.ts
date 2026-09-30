@@ -1,18 +1,13 @@
 // ADMIN_PASSWORD / ADMIN_SESSION_SECRET / DB_PATH are supplied via the local,
 // untracked .env file (Bun auto-loads it) - see admin.smoke.test.ts.
 //
-// Like the rest of the v1/admin smoke tests, this deliberately avoids
-// needing a live OpenCode server (see v1.smoke.test.ts's comments) - so it
-// only covers the parts of alias resolution that don't require
-// `listModels()` to succeed: the DB layer itself, the admin page's
-// degraded "OpenCode unreachable" rendering, and the resolver branches that
-// return before ever calling `listModels()` (the allowedModels gate) or
-// that go on to call it and are expected to fail gracefully without a live
-// server. The full happy path (alias -> real model + pinned variant,
-// multi-target priority/random ordering, and failover on error/timeout,
-// end to end through POST /v1/chat/completions and /v1/responses calls)
-// was verified manually against a stand-in OpenCode server during
-// development.
+// These run with no provider configured, so the model catalog is empty:
+// they cover the DB layer, the admin page with nothing to alias, and the
+// resolver branches that don't need a model to be available (the
+// allowedModels gate, an alias whose targets are all unavailable). The
+// happy path - alias -> model + pinned level, failover across targets,
+// through /v1/chat/completions and /v1/responses - is in catalog.test.ts,
+// against fake providers.
 import { describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { createAlias, deleteAlias, findAliasByName, listAliases } from "../src/db/modelAliases";
@@ -73,12 +68,12 @@ async function loginCookie(): Promise<string> {
   return (res.headers.get("set-cookie") ?? "").split(";")[0]!;
 }
 
-describe("admin /admin/aliases (no live OpenCode)", () => {
-  test("GET renders the unreachable state instead of crashing", async () => {
+describe("admin /admin/aliases (no provider configured)", () => {
+  test("GET renders with nothing to alias yet", async () => {
     const cookie = await loginCookie();
     const res = await adminApp.request("/admin/aliases", { headers: { cookie } });
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("OpenCode is not reachable");
+    expect(await res.text()).toContain("nothing to alias yet");
   });
 
   test("POST fails gracefully (no model can ever be picked) instead of crashing", async () => {
@@ -98,8 +93,8 @@ describe("admin /admin/aliases (no live OpenCode)", () => {
   });
 });
 
-describe("v1Router alias resolution (no live OpenCode)", () => {
-  test("a key not allowed to use an existing alias is blocked with 403 before any OpenCode call", async () => {
+describe("v1Router alias resolution (no provider configured)", () => {
+  test("a key not allowed to use an existing alias is blocked with 403", async () => {
     createAlias("alias-gate-test", "priority", [{ providerID: "openai", modelID: "gpt-5.6-luna", variant: "xhigh" }]);
     const { rawKey } = createKey("alias-gate-test-key", ["some-other-model"]);
 
@@ -113,7 +108,7 @@ describe("v1Router alias resolution (no live OpenCode)", () => {
     expect(body.error.code).toBe("model_not_allowed");
   });
 
-  test("an existing alias for an unrestricted key fails gracefully (502) without a live OpenCode server", async () => {
+  test("an alias whose targets are all unavailable fails gracefully (502)", async () => {
     createAlias("alias-degraded-test", "priority", [{ providerID: "openai", modelID: "gpt-5.6-luna", variant: "xhigh" }]);
     const { rawKey } = createKey("alias-degraded-test-key");
 
@@ -135,9 +130,11 @@ describe("v1Router alias resolution (no live OpenCode)", () => {
     expect(res.status).toBe(400);
   });
 
-  test("GET /v1/models still degrades to 502 without a live OpenCode server (aliases never reached)", async () => {
+  test("GET /v1/models lists aliases even with no models available", async () => {
     const { rawKey } = createKey("alias-models-degraded-key");
     const res = await v1App.request("/v1/models", { headers: { authorization: `Bearer ${rawKey}` } });
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { id: string; owned_by: string }[] };
+    expect(body.data.find((m) => m.id === "alias-gate-test")?.owned_by).toBe("alias");
   });
 });

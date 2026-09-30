@@ -1,6 +1,6 @@
 import type { FC } from "hono/jsx";
 import { Layout } from "./layout";
-import type { ModelSummary } from "../opencode/client";
+import type { ModelSummary } from "../catalog";
 import { defaultReasoningVariant } from "../reasoning";
 
 interface PlaygroundProps {
@@ -326,7 +326,7 @@ export const Playground: FC<PlaygroundProps> = ({ models, unreachable }) => {
     >
       <style dangerouslySetInnerHTML={{ __html: STYLE }}></style>
 
-      {unreachable && <div class="banner error">OpenCode is not reachable. Check that the opencode server is running.</div>}
+      {unreachable && <div class="banner error">Could not load the model list. Check the server log.</div>}
 
       {!unreachable && modelsByProvider.size === 0 && (
         <div class="banner error">No models are available yet — connect a provider first.</div>

@@ -9,7 +9,6 @@ import type {
   ThinkingLevel,
   Usage,
 } from "@earendil-works/pi-ai";
-import type { FirstOutcome, StreamDoneResult } from "../openai/stream";
 import type {
   ChatCompletionChunk,
   ChatCompletionResponse,
@@ -49,8 +48,7 @@ const ZERO_USAGE: Usage = {
 
 /**
  * Maps an OpenAI `messages` array onto a pi-ai Context, keeping the turns
- * as real turns (unlike the OpenCode path, which has to flatten history
- * into one labeled transcript). System/developer messages become the
+ * as real turns. System/developer messages become the
  * system prompt. Prior assistant turns are attributed to the target model.
  * `tool` messages are rendered as user text for now - tool calls are not
  * passed through yet.
@@ -113,7 +111,7 @@ type PayloadHook = (payload: unknown) => unknown;
  *   have put `effort` in `output_config`)
  *
  * `json_object` is passed through where the API has an equivalent and
- * otherwise ignored, matching how the OpenCode path treats it.
+ * otherwise ignored (plain text).
  */
 export function structuredOutputHook(api: Api, responseFormat: ResponseFormat | undefined): PayloadHook | undefined {
   if (!responseFormat || responseFormat.type === "text") return undefined;
@@ -159,16 +157,6 @@ export function structuredOutputHook(api: Api, responseFormat: ResponseFormat | 
     default:
       throw new UnsupportedResponseFormatError(api);
   }
-}
-
-/**
- * Splits an optional "#level" suffix off a pi model id, mirroring the
- * "#variant" convention of the OpenCode path.
- */
-export function splitVariant(model: string): { base: string; variant?: string } {
-  const hashIdx = model.indexOf("#");
-  if (hashIdx < 0) return { base: model };
-  return { base: model.slice(0, hashIdx), variant: model.slice(hashIdx + 1) };
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +214,20 @@ export function piMessageToOpenAIResponse(model: string, message: AssistantMessa
     usage: toOpenAIUsage(piUsageToTokenUsage(message.usage)),
   };
 }
+
+export interface StreamDoneResult {
+  fullText: string;
+  usage?: TokenUsage;
+  errorMessage?: string;
+}
+
+/**
+ * Settles as soon as a stream got off the ground (first text delta) or
+ * failed before producing anything - lets the caller fail over to another
+ * target, or answer with a plain error response, before any byte of the
+ * stream has reached the client.
+ */
+export type FirstOutcome = { ok: true } | { ok: false; message: string };
 
 export interface PiChatStream {
   stream: ReadableStream<Uint8Array>;

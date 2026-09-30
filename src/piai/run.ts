@@ -1,17 +1,16 @@
 import type { AssistantMessage, AssistantMessageEvent, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { ChatMessage, ResponseFormat } from "../openai/types";
-import { createPiChatStream, messagesToPiContext, structuredOutputHook, UnsupportedResponseFormatError, type PiChatStream } from "./chat";
+import { messagesToPiContext, structuredOutputHook, UnsupportedResponseFormatError, type FirstOutcome } from "./chat";
 import { findPiModel, getPiModels, PI_REASONING_OFF, type PiModelSummary } from "./models";
 
 /**
- * Runs one pi-ai target of a /v1 or playground request. Mirrors how an
- * OpenCode target is tried: any failure (unknown model, unsupported format,
- * provider error, timeout before the first token) comes back as
- * `{ ok: false, message }` so the caller can fail over to the next target.
+ * Runs one target (a model + reasoning level) of a /v1 or playground
+ * request. Any failure - unknown model, unsupported format, provider error,
+ * timeout before the first token - comes back as `{ ok: false, message }`
+ * so the caller can fail over to the next target of an alias.
  */
 
 export interface PiTarget {
-  /** "pi/<provider>" */
   providerID: string;
   modelID: string;
   variant: string | undefined;
@@ -29,7 +28,7 @@ type Prepared =
 async function prepare(target: PiTarget, request: PiRunRequest): Promise<Prepared> {
   const id = `${target.providerID}/${target.modelID}`;
   const summary = await findPiModel(id);
-  if (!summary) return { ok: false, message: `Model "${id}" is not available (is its provider still signed in?)` };
+  if (!summary) return { ok: false, message: `Model "${id}" is not available (is its provider still configured?)` };
   if (target.variant && !summary.variants.includes(target.variant)) {
     return { ok: false, message: `Variant "${target.variant}" is not available for model "${id}"` };
   }
@@ -94,21 +93,22 @@ export async function piOpenStream(
 }
 
 /**
- * Starts a streaming request and waits only until it gets off the ground
- * (first text delta, or a failure before any). The per-target timeout only
- * covers that phase: once text flows, a long answer must not be cut off.
+ * Starts a streaming request, wraps pi-ai's events with `build` (a chat or
+ * Responses SSE stream) and waits only until it gets off the ground - first
+ * text delta, or a failure before any. The per-target timeout covers just
+ * that phase: once text flows, a long answer must not be cut off.
  */
-export async function piStartStream(
+export async function piStartStream<TStream extends { firstOutcome: Promise<FirstOutcome> }>(
   target: PiTarget,
   request: PiRunRequest,
-  responseModel: string,
-  options: { includeUsage?: boolean; timeoutMs: number }
-): Promise<{ ok: true; built: PiChatStream } | { ok: false; message: string }> {
+  build: (events: AsyncIterable<AssistantMessageEvent>) => TStream,
+  timeoutMs: number
+): Promise<{ ok: true; built: TStream } | { ok: false; message: string }> {
   const opened = await piOpenStream(target, request);
   if (!opened.ok) return opened;
   const { events, abort } = opened;
-  const timer = setTimeout(() => abort.abort(), options.timeoutMs);
-  const built = createPiChatStream(events, responseModel, { includeUsage: options.includeUsage });
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  const built = build(events);
   const outcome = await built.firstOutcome;
   clearTimeout(timer);
   if (!outcome.ok) return { ok: false, message: abort.signal.aborted ? timeoutMessage(target) : outcome.message };

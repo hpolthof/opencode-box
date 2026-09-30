@@ -17,19 +17,19 @@ describe("OpenAI models by auth type", () => {
   test("Sign in with ChatGPT: only the subscription's models are offered", async () => {
     await withOpenAICredential({ type: "oauth", access: "a", refresh: "r", expires: Date.now() + 3_600_000 });
     const ids = (await listPiModels()).map((m) => m.id);
-    expect(ids).toContain("pi/openai/gpt-5.6-luna");
-    expect(ids).toContain("pi/openai/gpt-5.5");
-    expect(ids).not.toContain("pi/openai/gpt-5.4-mini");
-    expect(ids).not.toContain("pi/openai/gpt-4o");
-    expect(await findPiModel("pi/openai/gpt-5.4-mini")).toBeNull();
-    expect(await findPiModel("pi/openai/gpt-5.6-luna")).not.toBeNull();
+    expect(ids).toContain("openai/gpt-5.6-luna");
+    expect(ids).toContain("openai/gpt-5.5");
+    expect(ids).not.toContain("openai/gpt-5.4-mini");
+    expect(ids).not.toContain("openai/gpt-4o");
+    expect(await findPiModel("openai/gpt-5.4-mini")).toBeNull();
+    expect(await findPiModel("openai/gpt-5.6-luna")).not.toBeNull();
   });
 
   test("API key: the full OpenAI catalog", async () => {
     await withOpenAICredential({ type: "api_key", key: "sk-test" });
     const ids = (await listPiModels()).map((m) => m.id);
-    expect(ids).toContain("pi/openai/gpt-5.4-mini");
-    expect(ids).toContain("pi/openai/gpt-4o");
+    expect(ids).toContain("openai/gpt-5.4-mini");
+    expect(ids).toContain("openai/gpt-4o");
     expect(ids.length).toBeGreaterThan(20);
   });
 });

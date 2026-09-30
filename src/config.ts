@@ -11,8 +11,4 @@ export const CONFIG = {
   adminPassword: required("ADMIN_PASSWORD"),
   adminSessionSecret: required("ADMIN_SESSION_SECRET"),
   dbPath: process.env.DB_PATH ?? "./data/opencode-box.sqlite",
-  opencodeHome: process.env.OPENCODE_HOME ?? "./data/opencode-home",
-  opencodeHost: "127.0.0.1",
-  opencodePort: Number(process.env.OPENCODE_PORT ?? 4096),
-  terminalShell: process.env.TERMINAL_SHELL ?? "/bin/bash",
 } as const;

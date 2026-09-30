@@ -184,30 +184,30 @@ function post(body: object) {
 describe("POST /v1/chat/completions via pi-ai", () => {
   test("non-streaming: returns the faux answer with usage", async () => {
     faux.setResponses([fauxAssistantMessage([fauxText("Hallo daar")])]);
-    const res = await post({ model: "pi/faux/chat", messages: [{ role: "user", content: "Hi" }] });
+    const res = await post({ model: "faux/chat", messages: [{ role: "user", content: "Hi" }] });
     expect(res.status).toBe(200);
     const body = (await res.json()) as ChatCompletionResponse;
-    expect(body.model).toBe("pi/faux/chat");
+    expect(body.model).toBe("faux/chat");
     expect(body.choices[0].message.content).toBe("Hallo daar");
     expect(body.choices[0].finish_reason).toBe("stop");
     expect(body.usage?.completion_tokens).toBeGreaterThan(0);
   });
 
   test("unknown pi model -> 404", async () => {
-    const res = await post({ model: "pi/faux/nope", messages: [{ role: "user", content: "Hi" }] });
+    const res = await post({ model: "faux/nope", messages: [{ role: "user", content: "Hi" }] });
     expect(res.status).toBe(404);
     expect(((await res.json()) as OpenAIErrorBody).error.code).toBe("model_not_found");
   });
 
   test("unsupported reasoning level -> 400", async () => {
-    const res = await post({ model: "pi/mock/json#high", messages: [{ role: "user", content: "Hi" }] });
+    const res = await post({ model: "mock/json#high", messages: [{ role: "user", content: "Hi" }] });
     expect(res.status).toBe(400);
     expect(((await res.json()) as OpenAIErrorBody).error.code).toBe("variant_not_found");
   });
 
   test("upstream error before any content -> 502 JSON error", async () => {
     faux.setResponses([]);
-    const res = await post({ model: "pi/faux/chat", stream: true, messages: [{ role: "user", content: "Hi" }] });
+    const res = await post({ model: "faux/chat", stream: true, messages: [{ role: "user", content: "Hi" }] });
     expect(res.status).toBe(502);
     expect(((await res.json()) as OpenAIErrorBody).error.message).toContain("No more faux responses");
   });
@@ -215,7 +215,7 @@ describe("POST /v1/chat/completions via pi-ai", () => {
   test("streaming + json_schema: payload carries response_format, chunks stream through, usage on request", async () => {
     payloads.length = 0;
     const res = await post({
-      model: "pi/mock/json",
+      model: "mock/json",
       stream: true,
       stream_options: { include_usage: true },
       response_format: schemaFormat,

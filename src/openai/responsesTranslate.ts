@@ -1,8 +1,7 @@
-import type { AssistantMessage, AssistantMessageError, OutputFormat, Part } from "../opencode/types";
-import { buildOpenCodeFormat, extractErrorMessage, extractResponseContent } from "./translate";
-import { toTokenUsage } from "./usage";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { assistantText, piUsageToTokenUsage } from "../piai/chat";
+import type { ChatMessage, ResponseFormat } from "./types";
 import type {
-  ResponseErrorObject,
   ResponseInput,
   ResponseObject,
   ResponseOutputMessageItem,
@@ -10,126 +9,108 @@ import type {
   ResponseTextConfig,
   ResponseUsage,
 } from "./responsesTypes";
+import type { TokenUsage } from "./usage";
 
 /**
- * Flattens the Responses API's `input` (+ top-level `instructions`) into
- * OpenCode's single-shot `{system, text}` prompt shape - the same target
- * shape `messagesToOpenCodePrompt` produces from Chat Completions'
- * `messages` array, for the same reason: OpenCode sessions take one
- * `system` string plus one prompt `text` string, not a turn array.
+ * Maps the Responses API's `input` (+ top-level `instructions`) onto the
+ * same Chat-Completions-shaped message list the pi-ai backend takes for
+ * /v1/chat/completions: `instructions` first as a system message, then each
+ * input item as its own turn.
  */
-export function parseResponsesInput(input: ResponseInput, instructions?: string): { system: string | undefined; text: string } {
-  const systemParts: string[] = [];
-  if (instructions) systemParts.push(instructions);
-
+export function responsesInputToMessages(input: ResponseInput, instructions?: string): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  if (instructions) messages.push({ role: "system", content: instructions });
   if (typeof input === "string") {
-    return {
-      system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
-      text: input,
-    };
+    messages.push({ role: "user", content: input });
+    return messages;
   }
-
-  const turns: string[] = [];
   for (const item of input) {
     const content = typeof item.content === "string" ? item.content : item.content.map((part) => part.text).join("");
-    switch (item.role) {
-      case "system":
-      case "developer":
-        systemParts.push(content);
-        break;
-      case "user":
-        turns.push(`User: ${content}`);
-        break;
-    }
+    messages.push({ role: item.role === "developer" ? "system" : item.role, content });
   }
+  return messages;
+}
 
+/** The Responses API's `text.format` as the Chat Completions `response_format` the pi-ai backend understands. */
+export function responsesFormat(text?: ResponseTextConfig): ResponseFormat | undefined {
+  const format = text?.format;
+  if (!format || format.type !== "json_schema") return undefined;
+  return { type: "json_schema", json_schema: { name: format.name, schema: format.schema, strict: format.strict } };
+}
+
+export function toResponseUsage(usage: TokenUsage): ResponseUsage {
   return {
-    system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
-    text: turns.join("\n\n"),
+    input_tokens: usage.promptTokens,
+    input_tokens_details: { cached_tokens: usage.cacheReadTokens },
+    output_tokens: usage.completionTokens,
+    output_tokens_details: { reasoning_tokens: usage.reasoningTokens },
+    total_tokens: usage.totalTokens,
   };
 }
 
-/**
- * Builds OpenCode's `format` field from the Responses API's `text.format`.
- * `{type:"text"}` and absence both mean "just give me text" - reuses
- * `buildOpenCodeFormat` (via a constructed Chat-Completions-shaped wrapper)
- * so the json_schema -> OpenCode translation lives in exactly one place.
- * Like the existing `/v1/chat/completions` path, `name`/`strict`/
- * `description` have no OpenCode equivalent and are dropped.
- */
-export function buildResponsesFormat(text?: ResponseTextConfig): OutputFormat | undefined {
-  const format = text?.format;
-  if (!format || format.type !== "json_schema") return undefined;
-  return buildOpenCodeFormat({ type: "json_schema", json_schema: { schema: format.schema } });
-}
-
-/** Wraps `extractErrorMessage` into a Responses-API-shaped error object. */
-export function extractResponsesError(error: AssistantMessageError | undefined): ResponseErrorObject {
-  return { code: "api_error", message: extractErrorMessage(error) };
-}
-
-/**
- * Builds the complete `ResponseObject` for both success and failure - reused
- * by the non-streaming route and by the streaming layer's terminal
- * `response.completed` / `response.failed` event, so it fully self-
- * determines success vs failure from `args.info.error`.
- */
-export function buildResponseObject(args: {
+export function completedResponseObject(args: {
   id: string;
   model: string;
   instructions: string | null;
-  info: AssistantMessage;
-  parts: Part[];
+  createdAt: number;
+  text: string;
+  usage: TokenUsage | null;
 }): ResponseObject {
-  const { id, model, instructions, info, parts } = args;
-
-  if (info.error) {
-    return {
-      id,
-      object: "response",
-      // OpenCode is a JS/TS backend; `time.created` follows the standard
-      // `Date.now()` convention (milliseconds), hence the /1000 below.
-      created_at: Math.floor(info.time.created / 1000),
-      status: "failed",
-      model,
-      output: [],
-      output_text: "",
-      usage: null,
-      error: extractResponsesError(info.error),
-      instructions,
-    };
-  }
-
-  const text = extractResponseContent(info, parts);
-  const outputItem: ResponseOutputMessageItem = {
-    id: `msg_${info.id}`,
+  const item: ResponseOutputMessageItem = {
+    id: `msg_${args.id.replace(/^resp_/, "")}`,
     type: "message",
     role: "assistant",
     status: "completed",
-    content: [{ type: "output_text", text, annotations: [] } satisfies ResponseOutputTextPart],
+    content: [{ type: "output_text", text: args.text, annotations: [] } satisfies ResponseOutputTextPart],
   };
-
-  const tokens = info.tokens ? toTokenUsage(info.tokens) : null;
-  const usage: ResponseUsage | null = tokens
-    ? {
-        input_tokens: tokens.promptTokens,
-        input_tokens_details: { cached_tokens: tokens.cacheReadTokens },
-        output_tokens: tokens.completionTokens,
-        output_tokens_details: { reasoning_tokens: tokens.reasoningTokens },
-        total_tokens: tokens.totalTokens,
-      }
-    : null;
-
   return {
-    id,
+    id: args.id,
     object: "response",
-    created_at: Math.floor(info.time.created / 1000),
+    created_at: args.createdAt,
     status: "completed",
-    model,
-    output: [outputItem],
-    output_text: text,
-    usage,
+    model: args.model,
+    output: [item],
+    output_text: args.text,
+    usage: args.usage ? toResponseUsage(args.usage) : null,
     error: null,
-    instructions,
+    instructions: args.instructions,
   };
+}
+
+export function failedResponseObject(args: {
+  id: string;
+  model: string;
+  instructions: string | null;
+  createdAt: number;
+  message: string;
+}): ResponseObject {
+  return {
+    id: args.id,
+    object: "response",
+    created_at: args.createdAt,
+    status: "failed",
+    model: args.model,
+    output: [],
+    output_text: "",
+    usage: null,
+    error: { code: "api_error", message: args.message },
+    instructions: args.instructions,
+  };
+}
+
+/** Non-streaming /v1/responses result from a completed pi-ai message. */
+export function piMessageToResponseObject(args: {
+  id: string;
+  model: string;
+  instructions: string | null;
+  message: AssistantMessage;
+}): ResponseObject {
+  return completedResponseObject({
+    id: args.id,
+    model: args.model,
+    instructions: args.instructions,
+    createdAt: Math.floor(args.message.timestamp / 1000),
+    text: assistantText(args.message),
+    usage: piUsageToTokenUsage(args.message.usage),
+  });
 }

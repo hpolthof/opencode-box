@@ -26,12 +26,12 @@ async function loginCookie(): Promise<string> {
 }
 
 describe("admin playground", () => {
-  test("GET /admin/playground renders the unreachable banner when OpenCode is not running", async () => {
+  test("GET /admin/playground asks to connect a provider when no model is available", async () => {
     const cookie = await loginCookie();
     const res = await app.fetch(new Request("http://localhost/admin/playground", { headers: { cookie } }));
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(text).toContain("OpenCode is not reachable");
+    expect(text).toContain("connect a provider first");
   });
 
   test("POST /admin/playground/run without a cookie redirects to login", async () => {
@@ -90,7 +90,7 @@ describe("admin playground", () => {
     expect(body.error).toContain("schema");
   });
 
-  test("POST /admin/playground/run when OpenCode is unreachable -> 404 model lookup failure", async () => {
+  test("POST /admin/playground/run for a model that isn't available -> 404", async () => {
     const cookie = await loginCookie();
     const res = await app.fetch(
       new Request("http://localhost/admin/playground/run", {
@@ -99,8 +99,7 @@ describe("admin playground", () => {
         body: JSON.stringify({ model: "openai/gpt-5.4", prompt: "hi" }),
       })
     );
-    // No live OpenCode server in this test env, so listModels() itself
-    // throws before any model can ever be "matched" -> 502, not 404.
-    expect(res.status).toBe(502);
+    // No provider is configured in this test env.
+    expect(res.status).toBe(404);
   });
 });

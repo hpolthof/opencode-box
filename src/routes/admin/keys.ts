@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { createKey, listKeys, revokeKey, updateAllowedModels } from "../../db/apiKeys";
 import { listAliases } from "../../db/modelAliases";
 import { listCatalogModels } from "../../catalog";
-import type { ModelSummary } from "../../opencode/client";
+import type { ModelSummary } from "../../catalog";
 import { Keys } from "../../views/keys";
 
 export const keysRouter = new Hono();

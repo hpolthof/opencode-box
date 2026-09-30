@@ -1,9 +1,10 @@
-import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
+import type { AuthEvent, AuthPrompt, AuthType } from "@earendil-works/pi-ai";
 import { getOrCreatePiDeviceId } from "../db/settings";
 import { getPiModels } from "./models";
 
 /**
- * Drives pi-ai's provider-owned OAuth login flows from the admin dashboard.
+ * Drives pi-ai's provider-owned login flows from the admin dashboard: OAuth
+ * sign-ins, and entering an API key (pi-ai asks for it as a "secret" prompt).
  *
  * pi-ai runs a login as a series of `notify` events (an auth URL to open, a
  * device code to enter, progress) and `prompt` questions it awaits an answer
@@ -30,6 +31,7 @@ export interface LoginPromptView {
 export interface LoginSnapshot {
   id: string;
   providerId: string;
+  type: AuthType;
   status: LoginStatus;
   events: AuthEvent[];
   prompt: LoginPromptView | null;
@@ -45,6 +47,7 @@ interface PendingPrompt {
 interface LoginSession {
   id: string;
   providerId: string;
+  type: AuthType;
   status: LoginStatus;
   events: AuthEvent[];
   pending: PendingPrompt | null;
@@ -62,8 +65,8 @@ const FINISHED_RETENTION_MS = 10 * 60_000;
 const sessions = new Map<string, LoginSession>();
 
 export class LoginNotSupportedError extends Error {
-  constructor(providerId: string) {
-    super(`Provider "${providerId}" has no OAuth login`);
+  constructor(providerId: string, type: AuthType) {
+    super(type === "oauth" ? `Provider "${providerId}" has no OAuth sign-in` : `Provider "${providerId}" takes no API key`);
     this.name = "LoginNotSupportedError";
   }
 }
@@ -72,6 +75,7 @@ function snapshot(session: LoginSession): LoginSnapshot {
   return {
     id: session.id,
     providerId: session.providerId,
+    type: session.type,
     status: session.status,
     events: session.events,
     prompt: session.pending?.view ?? null,
@@ -91,15 +95,18 @@ function prune(now = Date.now()): void {
 }
 
 /**
- * Starts an OAuth login for `providerId` and returns its session right
- * away; the flow continues in the background. A login already running for
- * the same provider is cancelled first. On success pi-ai stores the
- * credential through the configured CredentialStore.
+ * Starts a login for `providerId` - an OAuth sign-in, or entering an API
+ * key - and returns its session right away; the flow continues in the
+ * background. A login already running for the same provider is cancelled
+ * first. On success pi-ai stores the credential through the configured
+ * CredentialStore, replacing whatever that provider had before (one
+ * credential per provider).
  */
-export function startLogin(providerId: string): LoginSnapshot {
+export function startLogin(providerId: string, type: AuthType = "oauth"): LoginSnapshot {
   prune();
   const provider = getPiModels().getProvider(providerId);
-  if (!provider?.auth.oauth) throw new LoginNotSupportedError(providerId);
+  const supported = type === "oauth" ? Boolean(provider?.auth.oauth) : typeof provider?.auth.apiKey?.login === "function";
+  if (!supported) throw new LoginNotSupportedError(providerId, type);
 
   for (const other of sessions.values()) {
     if (other.providerId === providerId && other.status === "running") other.abort.abort();
@@ -108,6 +115,7 @@ export function startLogin(providerId: string): LoginSnapshot {
   const session: LoginSession = {
     id: crypto.randomUUID(),
     providerId,
+    type,
     status: "running",
     events: [],
     pending: null,
@@ -148,7 +156,7 @@ export function startLogin(providerId: string): LoginSnapshot {
   };
 
   getPiModels()
-    .login(providerId, "oauth", interaction, { getDeviceId: getOrCreatePiDeviceId })
+    .login(providerId, type, interaction, { getDeviceId: getOrCreatePiDeviceId })
     .then(() => {
       session.status = "succeeded";
     })

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { queryRequests } from "../../db/requests";
-import { listCatalogModels } from "../../catalog";
+import { listModelRates } from "../../catalog";
 import { estimateCost, resolveModelRate } from "../../pricing";
 import { RequestsLog } from "../../views/requestsLog";
 
@@ -18,9 +18,7 @@ requestsLogRouter.get("/requests", async (c) => {
 
   const { rows, total } = queryRequests({ model, appName: app, status, page, pageSize: PAGE_SIZE });
 
-  // Best-effort: if OpenCode isn't reachable, requests still render - they
-  // just show no cost data, same as everywhere else pricing is optional.
-  const catalog = await listCatalogModels().catch(() => []);
+  const catalog = listModelRates();
   const rateByModel = new Map(catalog.map((m) => [m.id, resolveModelRate(m.cost, m.id)]));
 
   const rowsWithCost = rows.map((row) => {

@@ -10,7 +10,7 @@ import { defaultReasoningVariant, normalizeReasoningVariant } from "../src/reaso
 import { v1Router } from "../src/routes/v1";
 
 describe("defaultReasoningVariant: as little reasoning as the model allows", () => {
-  // Variant lists as OpenCode 1.18.30 / pi-ai report them.
+  // Typical reasoning-level lists of real models.
   test.each([
     [["none", "low", "medium", "high", "xhigh"], "none"], // gpt-5.5: reasoning off
     [["minimal", "low", "medium", "high"], "minimal"], // gpt-5: no off, minimal is lowest
@@ -106,12 +106,12 @@ function lastLoggedVariant(): string | null {
 describe("reasoning levels on pi-ai models", () => {
   test('a reasoning model lists "none" first; a non-reasoning model lists nothing', async () => {
     const catalog = await listCatalogModels();
-    expect(catalog.find((m) => m.id === "pi/rmock/thinker")?.variants?.[0]).toBe("none");
-    expect(catalog.find((m) => m.id === "pi/rmock/plain")?.variants).toBeUndefined();
+    expect(catalog.find((m) => m.id === "rmock/thinker")?.variants?.[0]).toBe("none");
+    expect(catalog.find((m) => m.id === "rmock/plain")?.variants).toBeUndefined();
   });
 
   test("no level given -> reasoning off (logged as none, no effort sent)", async () => {
-    const { res, payload } = await chat({ model: "pi/rmock/thinker" });
+    const { res, payload } = await chat({ model: "rmock/thinker" });
     expect(res.status).toBe(200);
     expect(payload.reasoning_effort).toBeUndefined();
     expect(lastLoggedVariant()).toBe("none");
@@ -119,7 +119,7 @@ describe("reasoning levels on pi-ai models", () => {
 
   test('explicit "none" and "off" -> off', async () => {
     for (const level of ["none", "off"]) {
-      const { res, payload } = await chat({ model: "pi/rmock/thinker", reasoning_effort: level });
+      const { res, payload } = await chat({ model: "rmock/thinker", reasoning_effort: level });
       expect(res.status).toBe(200);
       expect(payload.reasoning_effort).toBeUndefined();
       expect(lastLoggedVariant()).toBe("none");
@@ -127,15 +127,15 @@ describe("reasoning levels on pi-ai models", () => {
   });
 
   test("an explicit level is passed through", async () => {
-    const { res, payload } = await chat({ model: "pi/rmock/thinker#low" });
+    const { res, payload } = await chat({ model: "rmock/thinker#low" });
     expect(res.status).toBe(200);
     expect(payload.reasoning_effort).toBe("low");
     expect(lastLoggedVariant()).toBe("low");
   });
 
   test('"none" on a model without reasoning is accepted; a real level is not', async () => {
-    expect((await chat({ model: "pi/rmock/plain", reasoning_effort: "none" })).res.status).toBe(200);
-    const { res } = await chat({ model: "pi/rmock/plain", reasoning_effort: "high" });
+    expect((await chat({ model: "rmock/plain", reasoning_effort: "none" })).res.status).toBe(200);
+    const { res } = await chat({ model: "rmock/plain", reasoning_effort: "high" });
     expect(res.status).toBe(400);
     expect(((await res.json()) as OpenAIErrorBody).error.code).toBe("variant_not_found");
   });

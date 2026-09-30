@@ -2,7 +2,7 @@ import type { FC } from "hono/jsx";
 import { Layout } from "./layout";
 import { StatusPill } from "./theme";
 import type { ApiKeyRecord, ModelAliasRecord } from "../types";
-import type { ModelSummary } from "../opencode/client";
+import type { ModelSummary } from "../catalog";
 
 interface KeysProps {
   keys: ApiKeyRecord[];
@@ -112,7 +112,7 @@ const ModelPicker: FC<{
     return (
       <div class="model-picker">
         <div class="model-picker-empty" style="padding: 0.5rem 0;">
-          {modelsUnreachable ? "OpenCode is not reachable — key will be unrestricted." : "No models available."}
+          {modelsUnreachable ? "Could not load the model list — key will be unrestricted." : "No models available."}
         </div>
       </div>
     );

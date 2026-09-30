@@ -1,7 +1,7 @@
 import type { FC } from "hono/jsx";
 import { Layout } from "./layout";
 import type { ModelAliasMode, ModelAliasRecord } from "../types";
-import type { ModelSummary } from "../opencode/client";
+import type { ModelSummary } from "../catalog";
 
 interface AliasesProps {
   aliases: ModelAliasRecord[];
@@ -131,7 +131,7 @@ export const Aliases: FC<AliasesProps> = ({ aliases, models, modelsUnreachable, 
       {modelsUnreachable || modelsByProvider.size === 0 ? (
         <p class="muted">
           {modelsUnreachable
-            ? "OpenCode is not reachable — can't create an alias right now."
+            ? "Could not load the model list — can't create an alias right now."
             : "No connected model currently exposes reasoning variants, so there's nothing to alias yet."}
         </p>
       ) : (

@@ -5,7 +5,6 @@ interface MaintenanceProps {
   totalRequests: number;
   oldestRequestDate: string | null;
   dbSizeBytes: number;
-  opencodeHomeSizeBytes: number;
   retentionDays: number | null;
   softPurgeEnabled: boolean;
   requestCountsByThreshold: { days: number; count: number }[];
@@ -61,7 +60,6 @@ export const Maintenance: FC<MaintenanceProps> = ({
   totalRequests,
   oldestRequestDate,
   dbSizeBytes,
-  opencodeHomeSizeBytes,
   retentionDays,
   softPurgeEnabled,
   requestCountsByThreshold,
@@ -90,10 +88,6 @@ export const Maintenance: FC<MaintenanceProps> = ({
         <div class="stat-card">
           <div class="label">Database size on disk</div>
           <div class="value">{formatBytes(dbSizeBytes)}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">OpenCode home size</div>
-          <div class="value">{formatBytes(opencodeHomeSizeBytes)}</div>
         </div>
       </div>
 

@@ -1,15 +1,13 @@
 /**
  * Reasoning level used when a request doesn't name one: as little as the
- * model allows, on both backends. Measured against OpenCode 1.18.30, whose
- * own default is *not* "off" (e.g. `effort: "medium"` for gpt-5.x):
+ * model allows (providers' own defaults are often not "off" - e.g. effort
+ * "medium" for GPT-5.x):
  *
  * - a "none"/"off" level switches reasoning off;
- * - otherwise "minimal" / "low" are the lowest effort levels, which beats
- *   the provider default (medium-ish) of such models;
- * - lists with only higher levels (e.g. Claude 4.5 or Gemini 2.5
- *   "high"/"max" thinking budgets) belong to models whose no-variant
- *   default is already the minimum - thinking off, or the provider's
- *   dynamic default - so no variant is sent then.
+ * - otherwise "minimal" / "low" are the lowest effort levels;
+ * - a list with only higher levels (e.g. "high"/"max" thinking budgets)
+ *   means the model's no-level default is already its minimum, so no level
+ *   is sent then.
  */
 const DEFAULT_REASONING_PREFERENCE = ["none", "off", "minimal", "low"];
 

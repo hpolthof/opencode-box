@@ -1,6 +1,6 @@
 import type { FC } from "hono/jsx";
 import { Layout } from "./layout";
-import type { ModelSummary } from "../opencode/client";
+import type { ModelSummary } from "../catalog";
 import { resolveModelRate } from "../pricing";
 
 interface ModelsProps {
@@ -46,7 +46,7 @@ export const Models: FC<ModelsProps> = ({ models, unreachable }) => {
 
   return (
     <Layout title="Models" subtitle="Every model currently available from a connected provider.">
-      {unreachable && <div class="banner error">OpenCode is not reachable. Check that the opencode server is running.</div>}
+      {unreachable && <div class="banner error">Could not load the model list. Check the server log.</div>}
 
       {!unreachable && (
         <>
@@ -71,7 +71,7 @@ export const Models: FC<ModelsProps> = ({ models, unreachable }) => {
           </p>
           <p class="muted">
             Prices are $/1M tokens, input / output. <span class="pill pill-muted">~</span> marks an estimate, used
-            where OpenCode doesn't report the model's real price.
+            where the model catalog doesn't list the model's real price.
           </p>
 
           <div class="table-card">

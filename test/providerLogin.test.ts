@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createModels, createProvider, type Model, type OAuthCredential } from "@earendil-works/pi-ai";
+import { createModels, createProvider, envApiKeyAuth, type Model, type OAuthCredential } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { Hono } from "hono";
 import { SqliteCredentialStore } from "../src/db/piCredentials";
@@ -29,6 +29,7 @@ const fakeOAuthProvider = createProvider({
   id: "fakeoauth",
   name: "Fake OAuth",
   auth: {
+    apiKey: envApiKeyAuth("Fake API key", ["FAKE_PROVIDER_API_KEY_UNSET"]),
     oauth: {
       name: "Fake (subscription)",
       async login(interaction) {
@@ -71,10 +72,10 @@ function admin(path: string, init: RequestInit = {}) {
 }
 
 async function startLogin(): Promise<string> {
-  const res = await admin("/admin/providers/pi/fakeoauth/login", { method: "POST" });
+  const res = await admin("/admin/providers/fakeoauth/login", { method: "POST" });
   expect(res.status).toBe(302);
   const location = res.headers.get("location")!;
-  expect(location).toMatch(/^\/admin\/providers\/pi\/login\/[0-9a-f-]+$/);
+  expect(location).toMatch(/^\/admin\/providers\/sessions\/[0-9a-f-]+$/);
   return location;
 }
 
@@ -95,17 +96,18 @@ function answer(base: string, promptId: string, value: string) {
   });
 }
 
-describe("pi-ai OAuth login from the dashboard", () => {
+describe("provider logins from the dashboard", () => {
   test("providers page lists the pi provider with its sign-in button", async () => {
     const html = await (await admin("/admin/providers")).text();
-    expect(html).toContain("pi-ai providers");
-    expect(html).toContain("/admin/providers/pi/fakeoauth/login");
+    expect(html).toContain("Fake OAuth");
+    expect(html).toContain("/admin/providers/fakeoauth/login");
     expect(html).toContain("Fake (subscription)");
+    expect(html).toContain("/admin/providers/fakeoauth/api-key");
     expect(html).toContain("not configured");
   });
 
   test("full flow: auth URL, pasted code, credential stored, models available", async () => {
-    expect(await findPiModel("pi/fakeoauth/m")).toBeNull();
+    expect(await findPiModel("fakeoauth/m")).toBeNull();
     const base = await startLogin();
 
     const page = await (await admin(base)).text();
@@ -125,19 +127,19 @@ describe("pi-ai OAuth login from the dashboard", () => {
     expect(done.prompt).toBeNull();
 
     expect(await store.read("fakeoauth")).toMatchObject({ type: "oauth", access: "access-token", refresh: "refresh-token" });
-    expect(await findPiModel("pi/fakeoauth/m")).not.toBeNull();
+    expect(await findPiModel("fakeoauth/m")).not.toBeNull();
 
     const html = await (await admin("/admin/providers")).text();
     expect(html).toContain("signed in");
-    expect(html).toContain("/admin/providers/pi/fakeoauth/logout");
+    expect(html).toContain("/admin/providers/fakeoauth/logout");
   });
 
   test("sign out removes the stored credential", async () => {
-    const res = await admin("/admin/providers/pi/fakeoauth/logout", { method: "POST" });
+    const res = await admin("/admin/providers/fakeoauth/logout", { method: "POST" });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/admin/providers?signed_out=fakeoauth");
     expect(await store.read("fakeoauth")).toBeUndefined();
-    expect(await findPiModel("pi/fakeoauth/m")).toBeNull();
+    expect(await findPiModel("fakeoauth/m")).toBeNull();
   });
 
   test("a wrong code fails the login with the provider's message", async () => {
@@ -160,13 +162,36 @@ describe("pi-ai OAuth login from the dashboard", () => {
     expect(done.prompt).toBeNull();
   });
 
-  test("login for a provider without OAuth -> 404; unknown session -> 404 state", async () => {
-    expect((await admin("/admin/providers/pi/nope/login", { method: "POST" })).status).toBe(404);
-    expect((await admin("/admin/providers/pi/login/unknown/state")).status).toBe(404);
+  test("set an API key: secret prompt, key stored, shown as set here, removable", async () => {
+    const res = await admin("/admin/providers/fakeoauth/api-key", { method: "POST" });
+    expect(res.status).toBe(302);
+    const base = res.headers.get("location")!;
+    const waiting = await waitForState(base, (s) => s.prompt !== null);
+    expect(waiting.type).toBe("api_key");
+    expect(waiting.prompt).toMatchObject({ type: "secret", message: "Enter Fake API key" });
+
+    expect((await answer(base, waiting.prompt!.id, "sk-test-123")).status).toBe(200);
+    expect((await waitForState(base, (s) => s.status !== "running")).status).toBe("succeeded");
+    expect(await store.read("fakeoauth")).toEqual({ type: "api_key", key: "sk-test-123" });
+    expect(await findPiModel("fakeoauth/m")).not.toBeNull();
+
+    const html = await (await admin("/admin/providers")).text();
+    expect(html).toContain("API key (set here)");
+    expect(html).toContain("Change API key");
+    expect(html).toContain("Remove key");
+
+    await admin("/admin/providers/fakeoauth/logout", { method: "POST" });
+    expect(await store.read("fakeoauth")).toBeUndefined();
+  });
+
+  test("login for an unknown provider -> 404; unknown session -> 404 state", async () => {
+    expect((await admin("/admin/providers/nope/login", { method: "POST" })).status).toBe(404);
+    expect((await admin("/admin/providers/nope/api-key", { method: "POST" })).status).toBe(404);
+    expect((await admin("/admin/providers/sessions/unknown/state")).status).toBe(404);
   });
 
   test("login routes require an admin session", async () => {
-    const res = await app.request("/admin/providers/pi/fakeoauth/login", { method: "POST" });
+    const res = await app.request("/admin/providers/fakeoauth/login", { method: "POST" });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/admin/login");
   });

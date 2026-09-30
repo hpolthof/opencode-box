@@ -1,36 +1,19 @@
 import { Hono, type Context } from "hono";
 import { apiKeyAuth, getApiKey, type ApiKeyAuthEnv } from "../auth/apiKeyAuth";
+import { listCatalogModels, type ModelSummary } from "../catalog";
 import { findAliasByName, listAliases } from "../db/modelAliases";
 import { insertRequestLog } from "../db/requests";
-import {
-  createSession,
-  deleteSession,
-  NO_TOOLS,
-  sendMessage,
-  sendPromptAsync,
-  subscribeEvents,
-  type SendMessageBody,
-} from "../opencode/client";
-import {
-  assistantMessageToOpenAIResponse,
-  buildOpenCodeFormat,
-  extractErrorMessage,
-  InvalidModelError,
-  messagesToOpenCodePrompt,
-  parseModelId,
-} from "../openai/translate";
-import { createOpenAIChatStream, type FirstOutcome, type StreamDoneResult } from "../openai/stream";
-import { openAIError, type ChatCompletionRequest, type ModelListResponse } from "../openai/types";
-import { buildResponseObject, buildResponsesFormat, parseResponsesInput } from "../openai/responsesTranslate";
-import { createResponsesStream, type ResponsesStream } from "../openai/responsesStream";
+import { piMessageToResponseObject, responsesFormat, responsesInputToMessages } from "../openai/responsesTranslate";
+import { createResponsesStream } from "../openai/responsesStream";
 import type { ResponseCreateParams } from "../openai/responsesTypes";
-import type { ModelSummary, OpenCodeEvent, SessionPromptResponse } from "../opencode/client";
-import type { RequestLogEntry } from "../types";
-import { toTokenUsage, type TokenUsage } from "../openai/usage";
-import { isPiProviderId, listCatalogModels } from "../catalog";
+import { InvalidModelError, parseModelId } from "../openai/translate";
+import { openAIError, type ChatCompletionRequest, type ModelListResponse } from "../openai/types";
+import type { TokenUsage } from "../openai/usage";
+import { createPiChatStream, piMessageToOpenAIResponse, piUsageToTokenUsage, type FirstOutcome, type StreamDoneResult } from "../piai/chat";
+import { piComplete, piStartStream, type PiRunRequest } from "../piai/run";
 import { defaultReasoningVariant, normalizeReasoningVariant } from "../reasoning";
-import { piMessageToOpenAIResponse, piUsageToTokenUsage } from "../piai/chat";
-import { piComplete, piStartStream } from "../piai/run";
+import type { RequestLogEntry } from "../types";
+import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai";
 
 export const v1Router = new Hono<ApiKeyAuthEnv>();
 
@@ -124,11 +107,11 @@ function shuffled<T>(items: T[]): T[] {
  * isn't an alias, parsed as a plain "provider/model[#variant]" id.
  *
  * On success this returns an ORDERED list of one or more targets to attempt
- * in turn (see `sendWithFailover`/`attemptStreamingTarget` below) - a plain
+ * in turn (see `completeWithFailover`/`streamWithFailover` below) - a plain
  * model resolves to exactly one; an alias resolves to its configured
  * targets, ordered by `position` for `mode: "priority"` or shuffled fresh
  * for `mode: "random"`, with any target whose underlying model is no longer
- * available from OpenCode filtered out up front. Either way this confirms
+ * available (e.g. its provider was signed out) filtered out up front. Either way this confirms
  * the request is allowed for the calling key (checked against
  * `requestedModel` as typed - the alias name itself for an alias, not what
  * it points to, ignoring `explicitVariant` since an alias's variant is
@@ -214,10 +197,8 @@ async function resolveRequestedModel(
     } else if ((variant === "none" || variant === "off") && !matched.variants?.length) {
       variant = undefined;
     }
-    // OpenCode models without a variant list accept any variant; pi-ai
-    // models always know their supported reasoning levels.
-    const knownVariants = matched.variants ?? (isPiProviderId(providerID) ? [] : null);
-    if (variant && knownVariants && !knownVariants.includes(variant)) {
+    const knownVariants = matched.variants ?? [];
+    if (variant && !knownVariants.includes(variant)) {
       return {
         ok: false,
         status: 400,
@@ -242,170 +223,107 @@ async function resolveRequestedModel(
  */
 const FAILOVER_TIMEOUT_MS = 120_000;
 
-function abortAfter(ms: number): { signal: AbortSignal; cancel: () => void } {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  return { signal: controller.signal, cancel: () => clearTimeout(timer) };
-}
-
-function delayedOutcome(ms: number, message: string): { promise: Promise<{ ok: false; message: string }>; cancel: () => void } {
-  let timer: ReturnType<typeof setTimeout>;
-  const promise = new Promise<{ ok: false; message: string }>((resolve) => {
-    timer = setTimeout(() => resolve({ ok: false, message }), ms);
-  });
-  return { promise, cancel: () => clearTimeout(timer) };
-}
-
-interface NonStreamingAttempt {
-  target: ResolvedTarget;
-  sessionId: string;
-  result: SessionPromptResponse;
-}
-
 /**
  * Tries each target in order for a non-streaming request, moving on to the
- * next on an OpenCode-reported error, a thrown/network error, or a timeout
- * (treated as "non-responsive"). Returns the first success, or the last
- * failure's message if every target failed.
+ * next on any failure (provider error, unavailable model, timeout).
+ * Returns the first success, or the last failure's message.
  */
-async function sendWithFailover(
+async function completeWithFailover(
   targets: ResolvedTarget[],
-  buildBody: (target: ResolvedTarget) => Omit<SendMessageBody, "model" | "variant">
-): Promise<{ ok: true; attempt: NonStreamingAttempt } | { ok: false; message: string }> {
+  request: PiRunRequest
+): Promise<{ ok: true; target: ResolvedTarget; message: AssistantMessage } | { ok: false; message: string }> {
   let lastMessage = "No target model available";
   for (const target of targets) {
-    let sessionId: string;
-    try {
-      sessionId = (await createSession("gateway request")).id;
-    } catch {
-      lastMessage = "Failed to create OpenCode session";
-      continue;
-    }
-
-    const { signal, cancel } = abortAfter(FAILOVER_TIMEOUT_MS);
-    try {
-      const result = await sendMessage(
-        sessionId,
-        { ...buildBody(target), model: { providerID: target.providerID, modelID: target.modelID }, variant: target.variant },
-        signal
-      );
-      cancel();
-      if (result.info.error) {
-        lastMessage = extractErrorMessage(result.info.error);
-        deleteSession(sessionId);
-        continue;
-      }
-      return { ok: true, attempt: { target, sessionId, result } };
-    } catch (err) {
-      cancel();
-      lastMessage =
-        err instanceof Error && err.name === "AbortError"
-          ? `Model "${target.providerID}/${target.modelID}" did not respond in time`
-          : err instanceof Error
-            ? err.message
-            : "Unexpected error calling OpenCode";
-      deleteSession(sessionId);
-    }
+    const attempt = await piComplete(target, request, FAILOVER_TIMEOUT_MS);
+    if (attempt.ok) return { ok: true, target, message: attempt.message };
+    lastMessage = attempt.message;
   }
   return { ok: false, message: lastMessage };
 }
 
-interface StreamingAttempt<TStream extends { firstOutcome: Promise<FirstOutcome> }> {
-  target: ResolvedTarget;
-  sessionId: string;
-  abortController: AbortController;
-  built: TStream;
+/**
+ * Streaming counterpart: tries each target only until its stream gets off
+ * the ground (see `piStartStream`). Nothing reaches the client before a
+ * target is committed to, so a failure up to that point can still fail
+ * over; after it, the stream runs to completion (or fails) on its own.
+ */
+async function streamWithFailover<TStream extends { firstOutcome: Promise<FirstOutcome>; stream: ReadableStream<Uint8Array>; done: Promise<StreamDoneResult> }>(
+  targets: ResolvedTarget[],
+  request: PiRunRequest,
+  build: (events: AsyncIterable<AssistantMessageEvent>) => TStream
+): Promise<{ ok: true; target: ResolvedTarget; built: TStream } | { ok: false; message: string }> {
+  let lastMessage = "No target model available";
+  for (const target of targets) {
+    const attempt = await piStartStream(target, request, build, FAILOVER_TIMEOUT_MS);
+    if (attempt.ok) return { ok: true, target, built: attempt.built };
+    lastMessage = attempt.message;
+  }
+  return { ok: false, message: lastMessage };
 }
 
-/**
- * Starts a streaming attempt against one target and waits only for its
- * `firstOutcome` (first content emitted, or a failure/timeout before any
- * content) - never for the full response. Nothing reaches the real HTTP
- * client from this attempt until the caller decides to commit to it (by
- * returning `attempt.built.stream` from the route), so a failure here can
- * still safely fail over to the next target. Once content has started
- * flowing for a committed attempt, this function is no longer in the
- * picture - the stream just runs to completion (or fails) on its own, same
- * as before this feature existed.
- */
-async function attemptStreamingTarget<TStream extends { firstOutcome: Promise<FirstOutcome> }>(
-  target: ResolvedTarget,
-  buildBody: (target: ResolvedTarget) => Omit<SendMessageBody, "model" | "variant">,
-  buildStream: (events: AsyncIterable<OpenCodeEvent>, sessionId: string) => TStream
-): Promise<{ ok: true; attempt: StreamingAttempt<TStream> } | { ok: false; message: string }> {
-  let sessionId: string;
+type JsonBody<T> = { ok: true; rawBody: string; body: T } | { ok: false; response: Response };
+
+/** Reads and parses the request body, logging and answering 400 on failure. */
+async function readJsonBody<T>(c: Context<ApiKeyAuthEnv>, start: number): Promise<JsonBody<T>> {
+  const apiKey = getApiKey(c);
+  const unknownRequest = (requestBody: string | null): PendingLog => ({
+    apiKeyId: apiKey.id,
+    appName: apiKey.name,
+    model: "unknown",
+    variant: null,
+    stream: false,
+    requestBody,
+  });
+  let rawBody: string;
   try {
-    sessionId = (await createSession("gateway request")).id;
+    rawBody = await c.req.text();
   } catch {
-    return { ok: false, message: "Failed to create OpenCode session" };
+    const message = "Failed to read request body";
+    logError(unknownRequest(null), start, 400, message);
+    return { ok: false, response: c.json(openAIError(message, "invalid_request_error"), 400) };
   }
-
-  const { signal, cancel } = abortAfter(FAILOVER_TIMEOUT_MS);
   try {
-    await sendPromptAsync(
-      sessionId,
-      { ...buildBody(target), model: { providerID: target.providerID, modelID: target.modelID }, variant: target.variant },
-      signal
-    );
-    cancel();
-  } catch (err) {
-    cancel();
-    deleteSession(sessionId);
-    const message =
-      err instanceof Error && err.name === "AbortError"
-        ? `Model "${target.providerID}/${target.modelID}" did not respond in time`
-        : err instanceof Error
-          ? err.message
-          : "Failed to start OpenCode prompt";
-    return { ok: false, message };
+    return { ok: true, rawBody, body: JSON.parse(rawBody) as T };
+  } catch {
+    const message = "Request body must be valid JSON";
+    logError(unknownRequest(rawBody), start, 400, message, rawBody);
+    return { ok: false, response: c.json(openAIError(message, "invalid_request_error"), 400) };
   }
+}
 
-  const abortController = new AbortController();
-  const events = subscribeEvents(abortController.signal);
-  const built = buildStream(events, sessionId);
+function sseResponse(c: Context<ApiKeyAuthEnv>, stream: ReadableStream<Uint8Array>): Response {
+  c.header("Content-Type", "text/event-stream");
+  c.header("Cache-Control", "no-cache");
+  c.header("Connection", "keep-alive");
+  return c.newResponse(stream);
+}
 
-  const { promise: watchdog, cancel: cancelWatchdog } = delayedOutcome(
-    FAILOVER_TIMEOUT_MS,
-    `Model "${target.providerID}/${target.modelID}" did not respond in time`
-  );
-  const outcome = await Promise.race([built.firstOutcome, watchdog]);
-  cancelWatchdog();
+/** Logs a committed stream's outcome once it has finished. */
+function logWhenDone(pending: PendingLog, start: number, done: Promise<StreamDoneResult>): void {
+  done
+    .then((result) => {
+      if (result.errorMessage) {
+        logError(pending, start, 200, result.errorMessage, result.fullText);
+      } else {
+        logOk(pending, start, 200, result.fullText, result.usage);
+      }
+    })
+    .catch((err) => {
+      console.error("[routes/v1] streaming done handler failed:", err);
+    });
+}
 
-  if (outcome.ok) {
-    return { ok: true, attempt: { target, sessionId, abortController, built } };
-  }
-  abortController.abort();
-  deleteSession(sessionId);
-  return { ok: false, message: outcome.message };
+function commitTarget(pending: PendingLog, target: ResolvedTarget): void {
+  pending.model = `${target.providerID}/${target.modelID}`;
+  pending.variant = target.variant ?? null;
 }
 
 v1Router.post("/chat/completions", async (c) => {
   const start = Date.now();
   const apiKey = getApiKey(c);
-
-  let rawBody: string;
-  try {
-    rawBody = await c.req.text();
-  } catch (err) {
-    const message = "Failed to read request body";
-    logError({ apiKeyId: apiKey.id, appName: apiKey.name, model: "unknown", variant: null, stream: false, requestBody: null }, start, 400, message);
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
-
-  let body: ChatCompletionRequest;
-  try {
-    body = JSON.parse(rawBody) as ChatCompletionRequest;
-  } catch {
-    const message = "Request body must be valid JSON";
-    logError(
-      { apiKeyId: apiKey.id, appName: apiKey.name, model: "unknown", variant: null, stream: false, requestBody: rawBody },
-      start,
-      400,
-      message,
-      rawBody
-    );
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
+  const parsed = await readJsonBody<ChatCompletionRequest>(c, start);
+  if (!parsed.ok) return parsed.response;
+  const { rawBody, body } = parsed;
 
   const pending: PendingLog = {
     apiKeyId: apiKey.id,
@@ -434,150 +352,40 @@ v1Router.post("/chat/completions", async (c) => {
   // A plain model resolves to one target whose (possibly defaulted)
   // reasoning level is known up front - log it even if the call fails.
   if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
-  const { system, text } = messagesToOpenCodePrompt(body.messages);
-  const format = buildOpenCodeFormat(body.response_format);
-  const buildBody = (): Omit<SendMessageBody, "model" | "variant"> => ({
-    system,
-    parts: [{ type: "text", text }],
-    format,
-    tools: NO_TOOLS,
-  });
-  // pi-ai targets get the real message list and the OpenAI response_format
-  // as-is (no flattening, no agent prompt) - see src/piai.
-  const piRequest = { messages: body.messages, responseFormat: body.response_format };
-  const commitTarget = (target: ResolvedTarget) => {
-    pending.model = `${target.providerID}/${target.modelID}`;
-    pending.variant = target.variant ?? null;
-  };
 
-  // Targets are tried in order - one for a plain model, several for an
-  // alias - each on whichever backend serves it.
-  let lastMessage = "No target model available";
+  const request: PiRunRequest = { messages: body.messages, responseFormat: body.response_format };
 
   if (!body.stream) {
-    for (const target of resolution.targets) {
-      if (isPiProviderId(target.providerID)) {
-        const attempt = await piComplete(target, piRequest, FAILOVER_TIMEOUT_MS);
-        if (!attempt.ok) {
-          lastMessage = attempt.message;
-          continue;
-        }
-        commitTarget(target);
-        const response = piMessageToOpenAIResponse(body.model, attempt.message);
-        const responseBody = JSON.stringify(response);
-        logOk(pending, start, 200, responseBody, piUsageToTokenUsage(attempt.message.usage));
-        return c.json(response, 200);
-      }
-
-      const attempt = await sendWithFailover([target], buildBody);
-      if (!attempt.ok) {
-        lastMessage = attempt.message;
-        continue;
-      }
-      const { sessionId, result } = attempt.attempt;
-      // Best-effort cleanup - don't make the caller wait on it, it has
-      // nothing to do with whether their answer is ready.
-      deleteSession(sessionId);
-      commitTarget(target);
-      const response = assistantMessageToOpenAIResponse(body.model, result.info, result.parts);
-      const responseBody = JSON.stringify(response);
-      logOk(pending, start, 200, responseBody, result.info.tokens ? toTokenUsage(result.info.tokens) : null);
-      return c.json(response, 200);
+    const result = await completeWithFailover(resolution.targets, request);
+    if (!result.ok) {
+      logError(pending, start, 502, result.message, rawBody);
+      return c.json(openAIError(result.message, "api_error"), 502);
     }
-    logError(pending, start, 502, lastMessage, rawBody);
-    return c.json(openAIError(lastMessage, "api_error"), 502);
+    commitTarget(pending, result.target);
+    const response = piMessageToOpenAIResponse(body.model, result.message);
+    logOk(pending, start, 200, JSON.stringify(response), piUsageToTokenUsage(result.message.usage));
+    return c.json(response, 200);
   }
 
-  // Streaming path: try each target in turn, but only for getting the
-  // response off the ground - see attemptStreamingTarget's docstring.
-  let selected: { target: ResolvedTarget; stream: ReadableStream<Uint8Array>; done: Promise<StreamDoneResult>; cleanup: () => void } | null =
-    null;
-  for (const target of resolution.targets) {
-    if (isPiProviderId(target.providerID)) {
-      const attempt = await piStartStream(target, piRequest, body.model, {
-        includeUsage: body.stream_options?.include_usage === true,
-        timeoutMs: FAILOVER_TIMEOUT_MS,
-      });
-      if (attempt.ok) {
-        selected = { target, stream: attempt.built.stream, done: attempt.built.done, cleanup: () => {} };
-        break;
-      }
-      lastMessage = attempt.message;
-      continue;
-    }
-
-    const attempt = await attemptStreamingTarget(target, buildBody, (events, sessionId) =>
-      createOpenAIChatStream(events, sessionId, body.model)
-    );
-    if (attempt.ok) {
-      const { sessionId, abortController, built } = attempt.attempt;
-      selected = {
-        target,
-        stream: built.stream,
-        done: built.done,
-        cleanup: () => {
-          abortController.abort();
-          deleteSession(sessionId);
-        },
-      };
-      break;
-    }
-    lastMessage = attempt.message;
+  const includeUsage = body.stream_options?.include_usage === true;
+  const result = await streamWithFailover(resolution.targets, request, (events) =>
+    createPiChatStream(events, body.model, { includeUsage })
+  );
+  if (!result.ok) {
+    logError(pending, start, 502, result.message, rawBody);
+    return c.json(openAIError(result.message, "api_error"), 502);
   }
-
-  if (!selected) {
-    logError(pending, start, 502, lastMessage, rawBody);
-    return c.json(openAIError(lastMessage, "api_error"), 502);
-  }
-
-  commitTarget(selected.target);
-  const { done, cleanup } = selected;
-  done
-    .then((result) => {
-      if (result.errorMessage) {
-        logError(pending, start, 200, result.errorMessage, result.fullText);
-      } else {
-        logOk(pending, start, 200, result.fullText, result.usage);
-      }
-    })
-    .catch((err) => {
-      console.error("[routes/v1] streaming done handler failed:", err);
-    })
-    .finally(cleanup);
-
-  c.header("Content-Type", "text/event-stream");
-  c.header("Cache-Control", "no-cache");
-  c.header("Connection", "keep-alive");
-  return c.newResponse(selected.stream);
+  commitTarget(pending, result.target);
+  logWhenDone(pending, start, result.built.done);
+  return sseResponse(c, result.built.stream);
 });
 
 v1Router.post("/responses", async (c) => {
   const start = Date.now();
   const apiKey = getApiKey(c);
-
-  let rawBody: string;
-  try {
-    rawBody = await c.req.text();
-  } catch {
-    const message = "Failed to read request body";
-    logError({ apiKeyId: apiKey.id, appName: apiKey.name, model: "unknown", variant: null, stream: false, requestBody: null }, start, 400, message);
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
-
-  let body: ResponseCreateParams;
-  try {
-    body = JSON.parse(rawBody) as ResponseCreateParams;
-  } catch {
-    const message = "Request body must be valid JSON";
-    logError(
-      { apiKeyId: apiKey.id, appName: apiKey.name, model: "unknown", variant: null, stream: false, requestBody: rawBody },
-      start,
-      400,
-      message,
-      rawBody
-    );
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
+  const parsed = await readJsonBody<ResponseCreateParams>(c, start);
+  if (!parsed.ok) return parsed.response;
+  const { rawBody, body } = parsed;
 
   const pending: PendingLog = {
     apiKeyId: apiKey.id,
@@ -596,7 +404,7 @@ v1Router.post("/responses", async (c) => {
   }
 
   if (typeof body.previous_response_id === "string" && body.previous_response_id.length > 0) {
-    const message = "`previous_response_id` is not supported - this gateway is stateless, so every call starts a fresh session";
+    const message = "`previous_response_id` is not supported - this gateway is stateless, so send the full conversation as `input`";
     logError(pending, start, 400, message, rawBody);
     return c.json(openAIError(message, "invalid_request_error"), 400);
   }
@@ -616,99 +424,44 @@ v1Router.post("/responses", async (c) => {
     logError(pending, start, resolution.status, resolution.message, rawBody);
     return c.json(openAIError(resolution.message, resolution.type, resolution.code), resolution.status);
   }
-  // A plain model resolves to one target whose (possibly defaulted)
-  // reasoning level is known up front - log it even if the call fails.
   if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
-  // The pi-ai backend only serves /chat/completions so far.
-  const targets = resolution.targets.filter((t) => !isPiProviderId(t.providerID));
-  if (targets.length === 0) {
-    const message = "pi-ai models (pi/...) are not supported on /v1/responses yet - use /v1/chat/completions";
-    logError(pending, start, 400, message, rawBody);
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
-  const { system, text } = parseResponsesInput(body.input, body.instructions);
-  const format = buildResponsesFormat(body.text);
+
   const instructions = typeof body.instructions === "string" ? body.instructions : null;
-  const buildBody = (): Omit<SendMessageBody, "model" | "variant"> => ({
-    system,
-    parts: [{ type: "text", text }],
-    format,
-    tools: NO_TOOLS,
-  });
+  const request: PiRunRequest = {
+    messages: responsesInputToMessages(body.input, instructions ?? undefined),
+    responseFormat: responsesFormat(body.text),
+  };
+  const responseId = `resp_${crypto.randomUUID().replace(/-/g, "")}`;
 
   if (!body.stream) {
-    const attempt = await sendWithFailover(targets, buildBody);
-    if (!attempt.ok) {
-      logError(pending, start, 502, attempt.message, rawBody);
-      return c.json(openAIError(attempt.message, "api_error"), 502);
+    const result = await completeWithFailover(resolution.targets, request);
+    if (!result.ok) {
+      logError(pending, start, 502, result.message, rawBody);
+      return c.json(openAIError(result.message, "api_error"), 502);
     }
-    const { target, sessionId, result } = attempt.attempt;
-    // Best-effort cleanup - don't make the caller wait on it, it has
-    // nothing to do with whether their answer is ready.
-    deleteSession(sessionId);
-    pending.model = `${target.providerID}/${target.modelID}`;
-    pending.variant = target.variant ?? null;
-
-    const response = buildResponseObject({ id: `resp_${result.info.id}`, model: body.model, instructions, info: result.info, parts: result.parts });
-    const responseBody = JSON.stringify(response);
-    logOk(pending, start, 200, responseBody, result.info.tokens ? toTokenUsage(result.info.tokens) : null);
+    commitTarget(pending, result.target);
+    const response = piMessageToResponseObject({ id: responseId, model: body.model, instructions, message: result.message });
+    logOk(pending, start, 200, JSON.stringify(response), piUsageToTokenUsage(result.message.usage));
     return c.json(response, 200);
   }
 
-  // Streaming path: try each target in turn, but only for getting the
-  // response off the ground - see attemptStreamingTarget's docstring.
-  let lastMessage = "No target model available";
-  let selected: StreamingAttempt<ResponsesStream> | null = null;
-  for (const target of targets) {
-    const attempt = await attemptStreamingTarget(target, buildBody, (events, sessionId) =>
-      createResponsesStream(events, sessionId, `resp_${sessionId}`, body.model, instructions)
-    );
-    if (attempt.ok) {
-      selected = attempt.attempt;
-      break;
-    }
-    lastMessage = attempt.message;
+  const result = await streamWithFailover(resolution.targets, request, (events) =>
+    createResponsesStream(events, responseId, body.model, instructions)
+  );
+  if (!result.ok) {
+    logError(pending, start, 502, result.message, rawBody);
+    return c.json(openAIError(result.message, "api_error"), 502);
   }
-
-  if (!selected) {
-    logError(pending, start, 502, lastMessage, rawBody);
-    return c.json(openAIError(lastMessage, "api_error"), 502);
-  }
-
-  const { target: selectedTarget, sessionId: selectedSessionId, abortController: selectedAbort, built } = selected;
-  pending.model = `${selectedTarget.providerID}/${selectedTarget.modelID}`;
-  pending.variant = selectedTarget.variant ?? null;
-
-  built.done
-    .then((result) => {
-      selectedAbort.abort();
-      if (result.errorMessage) {
-        logError(pending, start, 200, result.errorMessage, result.fullText);
-      } else {
-        logOk(pending, start, 200, result.fullText, result.usage);
-      }
-    })
-    .catch((err) => {
-      console.error("[routes/v1] responses streaming done handler failed:", err);
-    })
-    .finally(() => {
-      deleteSession(selectedSessionId);
-    });
-
-  c.header("Content-Type", "text/event-stream");
-  c.header("Cache-Control", "no-cache");
-  c.header("Connection", "keep-alive");
-  return c.newResponse(built.stream);
+  commitTarget(pending, result.target);
+  logWhenDone(pending, start, result.built.done);
+  return sseResponse(c, result.built.stream);
 });
 
 v1Router.get("/models", async (c) => {
   try {
     const apiKey = getApiKey(c);
     const all = await listCatalogModels();
-    const filtered = apiKey.allowedModels
-      ? all.filter((m) => apiKey.allowedModels!.includes(m.id))
-      : all;
-
+    const filtered = apiKey.allowedModels ? all.filter((m) => apiKey.allowedModels!.includes(m.id)) : all;
     const aliases = apiKey.allowedModels
       ? listAliases().filter((a) => apiKey.allowedModels!.includes(a.alias))
       : listAliases();
@@ -720,20 +473,19 @@ v1Router.get("/models", async (c) => {
           id: m.id,
           object: "model" as const,
           created: 0,
-          owned_by: isPiProviderId(m.providerID) ? "pi-ai" : "opencode",
+          owned_by: m.providerID,
           ...(m.variants && m.variants.length > 0 ? { variants: m.variants } : {}),
         })),
         ...aliases.map((a) => ({
           id: a.alias,
           object: "model" as const,
           created: 0,
-          owned_by: "opencode",
+          owned_by: "alias",
         })),
       ],
     };
     return c.json(response, 200);
-  } catch (err) {
-    const message = "Failed to list models from OpenCode";
-    return c.json(openAIError(message, "api_error"), 502);
+  } catch {
+    return c.json(openAIError("Failed to list models", "api_error"), 502);
   }
 });

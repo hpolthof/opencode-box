@@ -54,3 +54,20 @@ for (const column of ["variant TEXT", "reasoning_tokens INTEGER", "cache_read_to
     db.exec(`ALTER TABLE requests ADD COLUMN ${column}`);
   }
 }
+
+// Migration: during the pi-ai proof of concept, pi-ai models were addressed
+// as "pi/<provider>/<model>" next to OpenCode's "<provider>/<model>". With
+// OpenCode gone they use the plain form, so strip the prefix from stored
+// alias targets, key allow-lists and logged request models. Idempotent.
+db.transaction(() => {
+  db.exec("UPDATE model_alias_targets SET provider_id = substr(provider_id, 4) WHERE provider_id LIKE 'pi/%'");
+  db.exec("UPDATE requests SET model = substr(model, 4) WHERE model LIKE 'pi/%'");
+  const keys = db
+    .query<{ id: number; allowed_models: string }, []>("SELECT id, allowed_models FROM api_keys WHERE allowed_models LIKE '%\"pi/%'")
+    .all();
+  const update = db.query("UPDATE api_keys SET allowed_models = ? WHERE id = ?");
+  for (const key of keys) {
+    const models = (JSON.parse(key.allowed_models) as string[]).map((m) => (m.startsWith("pi/") ? m.slice(3) : m));
+    update.run(JSON.stringify([...new Set(models)]), key.id);
+  }
+})();

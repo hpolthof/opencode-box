@@ -11,7 +11,7 @@ import {
 } from "../../db/requests";
 import { countRevokedKeysOlderThan, purgeRevokedKeysOlderThan } from "../../db/apiKeys";
 import { getRetentionDays, getSoftPurgeEnabled, setRetentionDays, setSoftPurgeEnabled } from "../../db/settings";
-import { opencodeHomeSizeBytes, requestsDbSizeBytes, vacuum } from "../../db/maintenance";
+import { requestsDbSizeBytes, vacuum } from "../../db/maintenance";
 import { Maintenance } from "../../views/maintenance";
 
 export const maintenanceRouter = new Hono();
@@ -23,7 +23,6 @@ function loadStats() {
     totalRequests: countAllRequests(),
     oldestRequestDate: oldestRequestDate(),
     dbSizeBytes: requestsDbSizeBytes(),
-    opencodeHomeSizeBytes: opencodeHomeSizeBytes(),
     retentionDays: getRetentionDays(),
     softPurgeEnabled: getSoftPurgeEnabled(),
     requestCountsByThreshold: PURGE_THRESHOLDS_DAYS.map((days) => ({ days, count: countRequestsOlderThan(days) })),
