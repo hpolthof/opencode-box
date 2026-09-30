@@ -14,6 +14,8 @@ interface RequestRow {
   app_name: string;
   model: string;
   variant: string | null;
+  alias: string | null;
+  notes: string | null;
   stream: number;
   status: string;
   http_status: number;
@@ -37,6 +39,8 @@ function rowToEntry(row: RequestRow): RequestLogRow {
     appName: row.app_name,
     model: row.model,
     variant: row.variant,
+    alias: row.alias,
+    notes: row.notes,
     stream: Boolean(row.stream),
     status: row.status as "ok" | "error",
     httpStatus: row.http_status,
@@ -57,16 +61,18 @@ function rowToEntry(row: RequestRow): RequestLogRow {
 export function insertRequestLog(entry: RequestLogEntry): void {
   db.query(
     `INSERT INTO requests (
-       api_key_id, app_name, model, variant, stream, status, http_status,
+       api_key_id, app_name, model, variant, alias, notes, stream, status, http_status,
        prompt_tokens, completion_tokens, total_tokens,
        reasoning_tokens, cache_read_tokens, cache_write_tokens, latency_ms,
        error_message, request_body, response_body
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     entry.apiKeyId,
     entry.appName,
     entry.model,
     entry.variant,
+    entry.alias ?? null,
+    entry.notes ?? null,
     entry.stream ? 1 : 0,
     entry.status,
     entry.httpStatus,
@@ -242,6 +248,8 @@ export function exportRequestsCsv(): string {
     "app_name",
     "model",
     "variant",
+    "alias",
+    "notes",
     "stream",
     "status",
     "http_status",

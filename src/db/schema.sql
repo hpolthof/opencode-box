@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS requests (
   app_name          TEXT NOT NULL,
   model             TEXT NOT NULL,
   variant           TEXT,
+  alias             TEXT,
+  notes             TEXT,
   stream            INTEGER NOT NULL DEFAULT 0,
   status            TEXT NOT NULL,
   http_status       INTEGER NOT NULL,

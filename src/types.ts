@@ -35,8 +35,13 @@ export interface ModelAliasRecord {
 export interface RequestLogEntry {
   apiKeyId: number | null;
   appName: string;
+  /** The model that served the request (for an alias: the target that answered). */
   model: string;
   variant: string | null;
+  /** The alias the client asked for, when it did. */
+  alias?: string | null;
+  /** How the request was served, when noteworthy: failover, ignored client effort, dropped params. */
+  notes?: string | null;
   stream: boolean;
   status: "ok" | "error";
   httpStatus: number;

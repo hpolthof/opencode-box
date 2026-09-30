@@ -3,6 +3,7 @@ import { createModels, createProvider, fauxAssistantMessage, fauxProvider, fauxT
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { Hono } from "hono";
 import { listCatalogModels } from "../src/catalog";
+import { db } from "../src/db/client";
 import { createAlias, findAliasByName, listAliases } from "../src/db/modelAliases";
 import { parseModelId } from "../src/openai/translate";
 import type { ChatCompletionResponse, OpenAIErrorBody } from "../src/openai/types";
@@ -128,6 +129,45 @@ describe("routing targets", () => {
     const body = (await res.json()) as ChatCompletionResponse;
     expect(body.model).toBe("pi-failover");
     expect(body.choices[0].message.content).toBe("from the second target");
+  });
+
+  test("served-by headers and log notes: which target and level answered (issue 4)", async () => {
+    const lastLog = () =>
+      db.query<{ model: string; variant: string | null; alias: string | null; notes: string | null }, []>(
+        "SELECT model, variant, alias, notes FROM requests ORDER BY id DESC LIMIT 1"
+      ).get()!;
+
+    // Failover through an alias, non-streaming and streaming.
+    for (const stream of [false, true]) {
+      faux.setResponses([fauxAssistantMessage([fauxText("served")])]);
+      const res = await chat({ model: "pi-failover", stream, messages: [{ role: "user", content: "Hi" }] });
+      expect(res.status).toBe(200);
+      await res.text();
+      expect(res.headers.get("x-served-model")).toBe("faux/thinker");
+      expect(res.headers.get("x-served-reasoning")).toBe(thinkerVariant);
+      expect(res.headers.get("x-alias-target-index")).toBe("1");
+      expect(res.headers.get("x-failover")).toBe("true");
+      await Bun.sleep(5); // streaming logs once the stream is done
+      expect(lastLog()).toMatchObject({ model: "faux/thinker", variant: thinkerVariant, alias: "pi-failover" });
+      expect(lastLog().notes).toContain("failover: served by target 2 of 2");
+    }
+
+    // A client effort sent to an alias that pins its levels is flagged.
+    faux.setResponses([fauxAssistantMessage([fauxText("pinned")])]);
+    let res = await chat({ model: "pi-failover", reasoning_effort: "high", messages: [{ role: "user", content: "Hi" }] });
+    await res.text();
+    expect(res.headers.get("x-reasoning-overridden")).toBe("true");
+    expect(lastLog().notes).toContain("client reasoning effort ignored");
+
+    // A direct model: no alias headers, and the defaulted level is reported.
+    faux.setResponses([fauxAssistantMessage([fauxText("direct")])]);
+    res = await chat({ model: "faux/thinker", messages: [{ role: "user", content: "Hi" }] });
+    await res.text();
+    expect(res.headers.get("x-served-model")).toBe("faux/thinker");
+    expect(res.headers.get("x-served-reasoning")).toBeTruthy();
+    expect(res.headers.get("x-alias-target-index")).toBeNull();
+    expect(res.headers.get("x-failover")).toBeNull();
+    expect(lastLog()).toMatchObject({ alias: null, notes: null });
   });
 
   test("streaming through an alias", async () => {

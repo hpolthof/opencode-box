@@ -27,6 +27,8 @@ interface PendingLog {
   appName: string;
   model: string;
   variant: string | null;
+  alias?: string | null;
+  notes?: string | null;
   stream: boolean;
   requestBody: string | null;
 }
@@ -39,6 +41,8 @@ function baseLog(pending: PendingLog, start: number): Omit<RequestLogEntry, "sta
     appName: pending.appName,
     model: pending.model,
     variant: pending.variant,
+    alias: pending.alias ?? null,
+    notes: pending.notes ?? null,
     stream: pending.stream,
     requestBody: pending.requestBody,
     latencyMs: Date.now() - start,
@@ -100,6 +104,8 @@ export type ModelResolution =
        * ignored. Always false for a plain model.
        */
       clientEffortIgnored: boolean;
+      /** The alias that was resolved, or null for a plain model. */
+      alias: string | null;
     }
   | { ok: false; status: 400 | 403 | 404 | 502; message: string; type: "invalid_request_error" | "api_error"; code?: string };
 
@@ -191,7 +197,7 @@ export async function resolveRequestedModel(
         type: "api_error",
       };
     }
-    return { ok: true, targets, clientEffortIgnored: explicitVariant !== undefined && !alias.clientEffortOverrides };
+    return { ok: true, targets, clientEffortIgnored: explicitVariant !== undefined && !alias.clientEffortOverrides, alias: alias.alias };
   }
 
   let providerID: string;
@@ -240,7 +246,7 @@ export async function resolveRequestedModel(
         code: "variant_not_found",
       };
     }
-    return { ok: true, targets: [{ providerID, modelID, variant: resolved.variant }], clientEffortIgnored: false };
+    return { ok: true, targets: [{ providerID, modelID, variant: resolved.variant }], clientEffortIgnored: false, alias: null };
   } catch {
     return { ok: false, status: 502, message: "Failed to look up available models", type: "api_error" };
   }
@@ -379,9 +385,48 @@ function requestParams(body: Record<string, unknown>, capField: "max_output_toke
   };
 }
 
-function commitTarget(pending: PendingLog, target: ResolvedTarget): void {
+/**
+ * Records which target served the request - in the request log and in
+ * response headers, which clients can read without changing the OpenAI
+ * response shape their SDKs parse:
+ *
+ * - `x-served-model`: the concrete provider/model that answered;
+ * - `x-served-reasoning`: the reasoning level sent to the provider, or
+ *   `default` when none was (the model's own minimum);
+ * - `x-alias-target-index` (aliases only): 0-based position of that target,
+ *   and `x-failover: true` when it wasn't the first;
+ * - `x-reasoning-overridden: true`: the client's effort was ignored because
+ *   the alias pins its levels;
+ * - `x-dropped-params`: client parameters not forwarded to this model.
+ */
+function commitServed(
+  c: Context<ApiKeyAuthEnv>,
+  pending: PendingLog,
+  resolution: Extract<ModelResolution, { ok: true }>,
+  served: { target: ResolvedTarget; targetIndex: number; droppedParams: string[] }
+): void {
+  const { target, targetIndex, droppedParams } = served;
   pending.model = `${target.providerID}/${target.modelID}`;
   pending.variant = target.variant ?? null;
+  const notes: string[] = [];
+  c.header("x-served-model", pending.model);
+  c.header("x-served-reasoning", target.variant ?? "default");
+  if (resolution.alias) {
+    c.header("x-alias-target-index", String(targetIndex));
+    if (targetIndex > 0) {
+      c.header("x-failover", "true");
+      notes.push(`failover: served by target ${targetIndex + 1} of ${resolution.targets.length}`);
+    }
+  }
+  if (resolution.clientEffortIgnored) {
+    c.header("x-reasoning-overridden", "true");
+    notes.push("client reasoning effort ignored: the alias pins its levels");
+  }
+  if (droppedParams.length > 0) {
+    c.header("x-dropped-params", droppedParams.join(", "));
+    notes.push(`not forwarded: ${droppedParams.join(", ")}`);
+  }
+  pending.notes = notes.length > 0 ? notes.join("; ") : null;
 }
 
 v1Router.post("/chat/completions", async (c) => {
@@ -417,6 +462,7 @@ v1Router.post("/chat/completions", async (c) => {
   }
   // A plain model resolves to one target whose (possibly defaulted)
   // reasoning level is known up front - log it even if the call fails.
+  pending.alias = resolution.alias;
   if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
 
   const request: PiRunRequest = {
@@ -428,7 +474,7 @@ v1Router.post("/chat/completions", async (c) => {
   if (!body.stream) {
     const result = await completeWithFailover(resolution.targets, request);
     if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
-    commitTarget(pending, result.target);
+    commitServed(c, pending, resolution, result);
     const response = piMessageToOpenAIResponse(body.model, result.message);
     logOk(pending, start, 200, JSON.stringify(response), piUsageToTokenUsage(result.message.usage));
     return c.json(response, 200);
@@ -439,7 +485,7 @@ v1Router.post("/chat/completions", async (c) => {
     createPiChatStream(events, body.model, { includeUsage })
   );
   if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
-  commitTarget(pending, result.target);
+  commitServed(c, pending, resolution, result);
   logWhenDone(pending, start, result.built.done);
   return sseResponse(c, result.built.stream);
 });
@@ -488,6 +534,7 @@ v1Router.post("/responses", async (c) => {
     logError(pending, start, resolution.status, resolution.message, rawBody);
     return c.json(openAIError(resolution.message, resolution.type, resolution.code), resolution.status);
   }
+  pending.alias = resolution.alias;
   if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
 
   const instructions = typeof body.instructions === "string" ? body.instructions : null;
@@ -501,7 +548,7 @@ v1Router.post("/responses", async (c) => {
   if (!body.stream) {
     const result = await completeWithFailover(resolution.targets, request);
     if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
-    commitTarget(pending, result.target);
+    commitServed(c, pending, resolution, result);
     const response = piMessageToResponseObject({ id: responseId, model: body.model, instructions, message: result.message });
     logOk(pending, start, 200, JSON.stringify(response), piUsageToTokenUsage(result.message.usage));
     return c.json(response, 200);
@@ -511,7 +558,7 @@ v1Router.post("/responses", async (c) => {
     createResponsesStream(events, responseId, body.model, instructions)
   );
   if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
-  commitTarget(pending, result.target);
+  commitServed(c, pending, resolution, result);
   logWhenDone(pending, start, result.built.done);
   return sseResponse(c, result.built.stream);
 });

@@ -215,6 +215,8 @@ describe("an explicit none/off on a model that can't switch reasoning off", () =
       expect(res.status).toBe(200);
       expect(payload.reasoning_effort).toBe("low");
       expect(lastLoggedVariant()).toBe("low");
+      expect(res.headers.get("x-served-reasoning")).toBe("low");
+      expect(res.headers.get("x-served-model")).toBe("rmock/sol");
     }
   });
 
@@ -223,6 +225,7 @@ describe("an explicit none/off on a model that can't switch reasoning off", () =
     expect(res.status).toBe(200);
     expect(payload.reasoning_effort).toBeUndefined();
     expect(lastLoggedVariant()).toBeNull();
+    expect(res.headers.get("x-served-reasoning")).toBe("default");
   });
 
   test("a name that isn't a reasoning level, or a level the model lacks, is still a 400", async () => {

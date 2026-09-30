@@ -100,8 +100,39 @@ curl http://localhost:8080/v1/responses \
   request log.
 - **Usage**: non-streaming responses carry `usage`; for streaming chat completions, send
   `stream_options: {"include_usage": true}` to get a final usage chunk.
+- **Sampling and limits**: the output token cap (`max_output_tokens` for responses,
+  `max_completion_tokens` / `max_tokens` for chat), `temperature`, `top_p` and `prompt_cache_key`
+  are forwarded as sent. The cap is one-to-one (for OpenAI reasoning models it includes reasoning
+  tokens; OpenAI's Responses API needs at least 16). A response that hits the cap comes back as
+  `status: "incomplete"` with `incomplete_details.reason: "max_output_tokens"` (responses) or
+  `finish_reason: "length"` (chat). `prompt_cache_key` is only forwarded to OpenAI.
+- **Parameters a model doesn't take** are left out rather than failing the request, and reported in
+  the `x-dropped-params` header and the request log. Notably, *Sign in with ChatGPT* accepts none of
+  the cap, `temperature` and `top_p` - use an OpenAI API key when you need them. Some OpenAI
+  reasoning models reject `temperature`/`top_p`; the gateway retries once without them and
+  remembers that for the model.
 - **ChatGPT subscription**: with *Sign in with ChatGPT*, only the models the subscription includes
   are offered (OpenAI rejects the others); an OpenAI API key exposes the full OpenAI catalog.
+- **Errors**: a request the provider rejects keeps the provider's status and error fields (`type`,
+  `code`, `param`), e.g. 400 `invalid_json_schema` for a schema that isn't valid for strict mode, or
+  429 on rate limits. 502 means the gateway couldn't get an answer: network errors, timeouts,
+  provider 5xx.
+
+### Response headers
+
+Every successful response says what actually served it, without changing the OpenAI response body:
+
+| Header | Meaning |
+| --- | --- |
+| `x-served-model` | The `provider/model` that answered - for an alias, the target that served it. |
+| `x-served-reasoning` | The reasoning level sent to the provider after all resolution, or `default` when none was sent (the model's own minimum). |
+| `x-alias-target-index` | Aliases only: 0-based position of the target that served the request. |
+| `x-failover` | `true` when that wasn't the alias's first target. |
+| `x-reasoning-overridden` | `true` when the client sent an effort to an alias that pins its levels, so it was ignored. |
+| `x-dropped-params` | Client parameters that were not forwarded to this model (see above). |
+
+The request log (Admin > Requests) records the same: the serving model and level, the alias, and a
+note for failover, an ignored effort or dropped parameters.
 
 ## Structured output
 
@@ -126,7 +157,9 @@ accident there and fail now - fix the schema (or drop `strict`).
 
 An alias (Admin > Aliases) is a client-facing model name that maps to one or more
 `provider/model` + reasoning-level targets, tried in priority order or in a random order per request.
-A target that fails (provider error, unavailable, no first token within 120s) falls over to the next.
+A target that fails (provider 5xx or rate limit, unavailable, no first token within 120s) falls over
+to the next; a request the provider rejects as invalid (e.g. a 400) does not, since every target
+would reject it. `x-served-model` / `x-failover` tell which target answered.
 
 By default the targets' pinned reasoning levels always apply: a client's `reasoning_effort` /
 `reasoning.effort` has **no effect** on an alias. Turn on *Client effort overrides the pinned level*

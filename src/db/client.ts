@@ -48,7 +48,7 @@ if (legacyAliasRows.length > 0) {
 // already-existing `requests` table, so a column added after a database was
 // first created (like `variant`) needs to be backfilled explicitly here.
 const requestsColumns = db.query<{ name: string }, []>("PRAGMA table_info(requests)").all();
-for (const column of ["variant TEXT", "reasoning_tokens INTEGER", "cache_read_tokens INTEGER", "cache_write_tokens INTEGER"]) {
+for (const column of ["variant TEXT", "reasoning_tokens INTEGER", "cache_read_tokens INTEGER", "cache_write_tokens INTEGER", "alias TEXT", "notes TEXT"]) {
   const name = column.split(" ")[0];
   if (!requestsColumns.some((c) => c.name === name)) {
     db.exec(`ALTER TABLE requests ADD COLUMN ${column}`);
