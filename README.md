@@ -90,9 +90,7 @@ curl http://localhost:8080/v1/responses \
   -d '{"model": "openai/gpt-5.6-luna", "instructions": "Be brief.", "input": "Hello!"}'
 ```
 
-- **Structured output**: `response_format: {"type": "json_schema", ...}` (chat) or
-  `text.format` (responses) is mapped to each provider's native structured output (OpenAI
-  `response_format` / `text.format`, Anthropic `output_config.format`), streaming or not.
+- **Structured output**: see [Structured output](#structured-output) below.
 - **Reasoning**: `reasoning_effort` (chat), `reasoning.effort` (responses) or a `#level` suffix on the
   model id: `none` (off; `off` works too), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` - as
   far as the model supports them (`GET /v1/models` lists them per model as `variants`). Without one,
@@ -102,6 +100,25 @@ curl http://localhost:8080/v1/responses \
   `stream_options: {"include_usage": true}` to get a final usage chunk.
 - **ChatGPT subscription**: with *Sign in with ChatGPT*, only the models the subscription includes
   are offered (OpenAI rejects the others); an OpenAI API key exposes the full OpenAI catalog.
+
+## Structured output
+
+`response_format: {"type": "json_schema", "json_schema": {...}}` (chat) or `text.format` (responses)
+is mapped to each provider's native structured output - OpenAI `response_format` / `text.format`,
+Anthropic `output_config.format` - streaming or not. `name` and `strict` are forwarded as sent, so
+the result is what the client would get from the provider directly:
+
+- **With `strict: true`** the provider guarantees output that matches the schema, but the schema
+  itself must be valid for the provider's strict mode. For OpenAI that means `additionalProperties:
+  false` on every object and every property listed in `required`; express optional fields as
+  nullable (`"type": ["string", "null"]`). A schema that breaks these rules is rejected by the
+  provider (`invalid_json_schema`).
+- **Without `strict`** the schema guides the model but is not enforced: expect occasional
+  violations, for example of `minItems`/`maxItems`. Validate the result if it matters.
+
+The OpenCode-based version of this gateway dropped `strict` and `name`, so OpenAI always received a
+non-strict schema. Clients that send `strict: true` with a schema that isn't strict-valid worked by
+accident there and fail now - fix the schema (or drop `strict`).
 
 ## Aliases
 
@@ -144,7 +161,8 @@ delete it unless you intend to lose all of that.
 Upgrading from the OpenCode-based version: the old `/data/opencode-home` directory is no longer
 used and can be removed; provider logins have to be redone once in the dashboard. Aliases, key
 allow-lists and logs that referenced `pi/<provider>/<model>` ids from the pi-ai proof of concept
-are migrated to the plain `provider/model` form automatically.
+are migrated to the plain `provider/model` form automatically. Note that `strict` in structured
+output is now forwarded to the provider (see [Structured output](#structured-output)).
 
 ## Local development
 
