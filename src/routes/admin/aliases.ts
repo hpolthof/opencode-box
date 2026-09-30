@@ -50,10 +50,18 @@ aliasesRouter.post("/aliases", async (c) => {
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const mode = parseMode(body.mode);
   const targetRows = parseTargetRows(body);
+  // An unchecked checkbox isn't submitted at all.
+  const clientEffortOverrides = body.clientEffortOverrides !== undefined;
 
   const rerender = (error: string) =>
     c.html(
-      Aliases({ aliases: listAliases(), models, modelsUnreachable, error, formValues: { name, mode, targets: targetRows } }) as string,
+      Aliases({
+        aliases: listAliases(),
+        models,
+        modelsUnreachable,
+        error,
+        formValues: { name, mode, clientEffortOverrides, targets: targetRows },
+      }) as string,
       400
     );
 
@@ -71,7 +79,7 @@ aliasesRouter.post("/aliases", async (c) => {
   }
 
   try {
-    createAlias(name, mode, targets);
+    createAlias(name, mode, targets, { clientEffortOverrides });
   } catch (err) {
     const message = err instanceof Error && /unique/i.test(err.message) ? `Alias "${name}" already exists` : "Failed to create alias";
     return rerender(message);

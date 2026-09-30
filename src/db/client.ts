@@ -55,6 +55,13 @@ for (const column of ["variant TEXT", "reasoning_tokens INTEGER", "cache_read_to
   }
 }
 
+// Same for `model_aliases.client_effort_overrides`: existing aliases get 0,
+// i.e. they keep pinning their targets' reasoning levels.
+const aliasColumns = db.query<{ name: string }, []>("PRAGMA table_info(model_aliases)").all();
+if (!aliasColumns.some((c) => c.name === "client_effort_overrides")) {
+  db.exec("ALTER TABLE model_aliases ADD COLUMN client_effort_overrides INTEGER NOT NULL DEFAULT 0");
+}
+
 // Migration: during the pi-ai proof of concept, pi-ai models were addressed
 // as "pi/<provider>/<model>" next to OpenCode's "<provider>/<model>". With
 // OpenCode gone they use the plain form, so strip the prefix from stored

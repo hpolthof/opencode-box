@@ -49,10 +49,13 @@ CREATE TABLE IF NOT EXISTS settings (
 -- model_alias_targets are tried on each request: "priority" (in `position`
 -- order, falling over to the next on error/timeout) or "random" (a random
 -- order each time, still falling over through the rest of that order).
+-- `client_effort_overrides` (0/1): when 1, a client's explicit reasoning
+-- effort replaces the targets' pinned variants (clamped per target).
 CREATE TABLE IF NOT EXISTS model_aliases (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   alias       TEXT NOT NULL UNIQUE,
   mode        TEXT NOT NULL DEFAULT 'priority',
+  client_effort_overrides INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

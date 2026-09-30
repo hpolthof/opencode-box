@@ -3,7 +3,7 @@ import { createModels, createProvider, fauxAssistantMessage, fauxProvider, fauxT
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { Hono } from "hono";
 import { listCatalogModels } from "../src/catalog";
-import { createAlias } from "../src/db/modelAliases";
+import { createAlias, findAliasByName, listAliases } from "../src/db/modelAliases";
 import { parseModelId } from "../src/openai/translate";
 import type { ChatCompletionResponse, OpenAIErrorBody } from "../src/openai/types";
 import { setPiModelsForTesting } from "../src/piai/models";
@@ -91,6 +91,28 @@ describe("model catalog", () => {
       const html = await (await app.request(page, { headers: { cookie: adminCookie } })).text();
       expect(html).toContain("faux/thinker");
     }
+  });
+
+  test('the alias form saves "client effort overrides the pinned level" and the list shows it', async () => {
+    const create = (name: string, overrides: boolean) => {
+      const form = new URLSearchParams({ name, mode: "priority", targetModel: "faux/thinker", targetVariant: thinkerVariant });
+      if (overrides) form.set("clientEffortOverrides", "1");
+      return app.request("/admin/aliases", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: adminCookie },
+        body: form.toString(),
+        redirect: "manual",
+      });
+    };
+    expect((await create("form-effort-on", true)).status).toBe(302);
+    expect((await create("form-effort-off", false)).status).toBe(302);
+    expect(findAliasByName("form-effort-on")?.clientEffortOverrides).toBe(true);
+    expect(findAliasByName("form-effort-off")?.clientEffortOverrides).toBe(false);
+
+    const html = await (await app.request("/admin/aliases", { headers: { cookie: adminCookie } })).text();
+    expect(html).toContain('name="clientEffortOverrides"');
+    // One indicator per alias with the setting on (other test files share the database).
+    expect(html.match(/client effort overrides</g)).toHaveLength(listAliases().filter((a) => a.clientEffortOverrides).length);
   });
 });
 

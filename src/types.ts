@@ -23,6 +23,12 @@ export interface ModelAliasRecord {
   mode: ModelAliasMode;
   /** Ordered by `position` - for "priority" mode this IS the try order; for "random" mode it's just display order. */
   targets: ModelAliasTarget[];
+  /**
+   * When true, a client's explicit reasoning effort replaces the targets'
+   * pinned levels (mapped/clamped per target); when false (the default) the
+   * pinned levels always win.
+   */
+  clientEffortOverrides: boolean;
   createdAt: string;
 }
 

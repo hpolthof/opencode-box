@@ -13,7 +13,7 @@ import type { TokenUsage } from "../openai/usage";
 import { createPiChatStream, piMessageToOpenAIResponse, piUsageToTokenUsage, type FirstOutcome, type StreamDoneResult } from "../piai/chat";
 import { gatewayError } from "../piai/errors";
 import { piComplete, piStartStream, type PiRunRequest, type TargetError } from "../piai/run";
-import { defaultReasoningVariant, normalizeReasoningVariant } from "../reasoning";
+import { isReasoningLevel, resolveReasoningVariant } from "../reasoning";
 import type { RequestLogEntry } from "../types";
 import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai";
 
@@ -88,8 +88,18 @@ interface ResolvedTarget {
   variant: string | undefined;
 }
 
-type ModelResolution =
-  | { ok: true; targets: ResolvedTarget[] }
+export type ModelResolution =
+  | {
+      ok: true;
+      /** Each target's `variant` is the level that will actually be sent (after mapping/clamping). */
+      targets: ResolvedTarget[];
+      /**
+       * True when the client sent an explicit effort to an alias that pins
+       * its levels (`clientEffortOverrides` off), so that effort was
+       * ignored. Always false for a plain model.
+       */
+      clientEffortIgnored: boolean;
+    }
   | { ok: false; status: 400 | 403 | 404 | 502; message: string; type: "invalid_request_error" | "api_error"; code?: string };
 
 /** Fisher-Yates - used for alias `mode: "random"` so each request gets a fresh order to try targets in. */
@@ -116,11 +126,19 @@ function shuffled<T>(items: T[]): T[] {
  * available (e.g. its provider was signed out) filtered out up front. Either way this confirms
  * the request is allowed for the calling key (checked against
  * `requestedModel` as typed - the alias name itself for an alias, not what
- * it points to, ignoring `explicitVariant` since an alias's variant is
- * always pinned) and, for a plain model, that it actually offers the
+ * it points to) and, for a plain model, that it actually offers the
  * requested reasoning variant.
+ *
+ * Reasoning levels (see `resolveReasoningVariant`): no level, or an
+ * explicit "none"/"off", means as little reasoning as the model allows. For
+ * a plain model any other level it doesn't offer is a 400. An alias uses
+ * each target's pinned level (a pinned "none" mapped the same way), unless
+ * it has `clientEffortOverrides` on and the client sent an effort: then
+ * that effort goes to every target, clamped to the nearest level each
+ * target offers. With the setting off, an explicit effort is ignored and
+ * `clientEffortIgnored` says so.
  */
-async function resolveRequestedModel(
+export async function resolveRequestedModel(
   requestedModel: string,
   explicitVariant: string | undefined,
   allowedModels: string[] | null
@@ -142,10 +160,28 @@ async function resolveRequestedModel(
     } catch {
       return { ok: false, status: 502, message: "Failed to look up available models", type: "api_error" };
     }
+    const applyClientEffort = alias.clientEffortOverrides && explicitVariant !== undefined;
+    if (applyClientEffort && !isReasoningLevel(explicitVariant)) {
+      return {
+        ok: false,
+        status: 400,
+        message: `Variant "${explicitVariant}" is not a reasoning level (alias "${requestedModel}")`,
+        type: "invalid_request_error",
+        code: "variant_not_found",
+      };
+    }
     const orderedTargets = alias.mode === "random" ? shuffled(alias.targets) : alias.targets;
-    const targets: ResolvedTarget[] = orderedTargets
-      .filter((t) => available.some((m) => m.providerID === t.providerID && m.modelID === t.modelID))
-      .map((t) => ({ providerID: t.providerID, modelID: t.modelID, variant: t.variant }));
+    const targets: ResolvedTarget[] = [];
+    for (const t of orderedTargets) {
+      const matched = available.find((m) => m.providerID === t.providerID && m.modelID === t.modelID);
+      if (!matched) continue;
+      const resolved = applyClientEffort
+        ? resolveReasoningVariant(explicitVariant, matched.variants, { clamp: true })
+        : resolveReasoningVariant(t.variant, matched.variants);
+      // A pinned level the model no longer offers (other than "none"/"off")
+      // is passed on as is, so prepare() rejects it and the next target runs.
+      targets.push({ providerID: t.providerID, modelID: t.modelID, variant: resolved.ok ? resolved.variant : t.variant });
+    }
     if (targets.length === 0) {
       return {
         ok: false,
@@ -154,7 +190,7 @@ async function resolveRequestedModel(
         type: "api_error",
       };
     }
-    return { ok: true, targets };
+    return { ok: true, targets, clientEffortIgnored: explicitVariant !== undefined && !alias.clientEffortOverrides };
   }
 
   let providerID: string;
@@ -190,26 +226,20 @@ async function resolveRequestedModel(
         code: "model_not_allowed",
       };
     }
-    // No level requested -> as little reasoning as the model allows (see
-    // defaultReasoningVariant). "none"/"off" on a model without any
-    // reasoning levels is trivially satisfied, so it's dropped.
-    let variant = normalizeReasoningVariant(requestedVariant, matched.variants);
-    if (variant === undefined) {
-      variant = defaultReasoningVariant(matched.variants);
-    } else if ((variant === "none" || variant === "off") && !matched.variants?.length) {
-      variant = undefined;
-    }
-    const knownVariants = matched.variants ?? [];
-    if (variant && !knownVariants.includes(variant)) {
+    // No level, or "none"/"off" -> as little reasoning as the model allows;
+    // any other level the model doesn't offer is rejected.
+    const resolved = resolveReasoningVariant(requestedVariant, matched.variants);
+    if (!resolved.ok) {
+      const knownVariants = matched.variants ?? [];
       return {
         ok: false,
         status: 400,
-        message: `Variant "${variant}" is not available for model "${requestedId}". Available variants: ${knownVariants.join(", ") || "(this model has no reasoning levels)"}`,
+        message: `Variant "${requestedVariant}" is not available for model "${requestedId}". Available variants: ${knownVariants.join(", ") || "(this model has no reasoning levels)"}`,
         type: "invalid_request_error",
         code: "variant_not_found",
       };
     }
-    return { ok: true, targets: [{ providerID, modelID, variant }] };
+    return { ok: true, targets: [{ providerID, modelID, variant: resolved.variant }], clientEffortIgnored: false };
   } catch {
     return { ok: false, status: 502, message: "Failed to look up available models", type: "api_error" };
   }
