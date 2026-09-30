@@ -1,13 +1,9 @@
 /**
  * $/1M-token reference pricing, used only as a fallback when a model's own
- * catalog data (OpenCode's `cost.input`/`cost.output`, from either the
- * curated `GET /api/model` catalog or the raw `GET /provider` model list)
- * doesn't report real pricing - either missing entirely, or explicitly
- * `{input: 0, output: 0}`. In this gateway's own testing, every connected
- * OpenAI model reports zero cost from OpenCode itself, most likely because
- * billing runs through a flat subscription rather than a metered API key -
- * not because the models are actually free - so a zero-cost report is
- * treated as "no real data" and falls back to this table.
+ * catalog data (pi-ai's `cost`) doesn't report real pricing - either
+ * missing entirely, or explicitly `{input: 0, output: 0}`. A zero-cost
+ * report is treated as "no real data" (not as "free") and falls back to
+ * this table.
  *
  * Sourced from OpenAI's API pricing page (developers.openai.com/api/docs/pricing)
  * on 2026-09-25. Short-context/standard-tier rates only - the >272K-token

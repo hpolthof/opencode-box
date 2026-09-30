@@ -12,7 +12,7 @@ describe("v1Router auth", () => {
     const res = await app.request("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "opencode/foo", messages: [{ role: "user", content: "hi" }] }),
+      body: JSON.stringify({ model: "openai/foo", messages: [{ role: "user", content: "hi" }] }),
     });
     expect(res.status).toBe(401);
     const body = (await res.json()) as OpenAIErrorBody;
@@ -23,7 +23,7 @@ describe("v1Router auth", () => {
     const res = await app.request("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Token abc" },
-      body: JSON.stringify({ model: "opencode/foo", messages: [] }),
+      body: JSON.stringify({ model: "openai/foo", messages: [] }),
     });
     expect(res.status).toBe(401);
   });
@@ -32,7 +32,7 @@ describe("v1Router auth", () => {
     const res = await app.request("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer sk-ob-does-not-exist" },
-      body: JSON.stringify({ model: "opencode/foo", messages: [] }),
+      body: JSON.stringify({ model: "openai/foo", messages: [] }),
     });
     expect(res.status).toBe(401);
     const body = (await res.json()) as OpenAIErrorBody;
@@ -48,7 +48,7 @@ describe("v1Router auth", () => {
     const res = await app.request("/v1/responses", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "opencode/foo", input: "hi" }),
+      body: JSON.stringify({ model: "openai/foo", input: "hi" }),
     });
     expect(res.status).toBe(401);
   });
@@ -181,7 +181,7 @@ describe("v1Router POST /v1/responses", () => {
     expect(body.error.message).toContain("schema");
   });
 
-  test("model not found on this gateway -> 404 (no live OpenCode needed - listModels() itself fails first) or 502", async () => {
+  test("model not available on this gateway -> 404", async () => {
     const { createKey } = await import("../src/db/apiKeys");
     const { rawKey } = createKey("responses-test-app-7");
 
@@ -190,9 +190,8 @@ describe("v1Router POST /v1/responses", () => {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${rawKey}` },
       body: JSON.stringify({ model: "openai/gpt-5.4", input: "hi" }),
     });
-    // No live OpenCode server in this test env, so listModels() throws
-    // before any model can ever be "matched" -> 502, not 404.
-    expect(res.status).toBe(502);
+    // No provider is configured in this test env.
+    expect(res.status).toBe(404);
   });
 
   test("array-form `input` with a bad model id -> 400 (accepts the structured input shape)", async () => {

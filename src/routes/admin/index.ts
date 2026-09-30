@@ -9,7 +9,6 @@ import { requestsLogRouter } from "./requestsLog";
 import { providersRouter } from "./providers";
 import { playgroundRouter } from "./playground";
 import { modelsRouter } from "./models";
-import { terminalRouter } from "./terminal";
 import { maintenanceRouter } from "./maintenance";
 
 export const adminRouter = new Hono();
@@ -50,5 +49,4 @@ adminRouter.route("/", providersRouter);
 adminRouter.route("/", playgroundRouter);
 adminRouter.route("/", modelsRouter);
 adminRouter.route("/", aliasesRouter);
-adminRouter.route("/", terminalRouter);
 adminRouter.route("/", maintenanceRouter);

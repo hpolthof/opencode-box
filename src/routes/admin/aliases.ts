@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { createAlias, deleteAlias, listAliases } from "../../db/modelAliases";
-import { listModels, type ModelSummary } from "../../opencode/client";
+import { listCatalogModels } from "../../catalog";
+import type { ModelSummary } from "../../catalog";
 import { Aliases } from "../../views/aliases";
 import type { ModelAliasMode, ModelAliasTarget } from "../../types";
 
@@ -9,7 +10,7 @@ export const aliasesRouter = new Hono();
 /** Only models with at least one configured reasoning variant make sense as an alias target. */
 async function pickableModels(): Promise<{ models: ModelSummary[]; modelsUnreachable: boolean }> {
   try {
-    const all = await listModels();
+    const all = await listCatalogModels();
     return { models: all.filter((m) => m.variants && m.variants.length > 0), modelsUnreachable: false };
   } catch {
     return { models: [], modelsUnreachable: true };
@@ -49,10 +50,18 @@ aliasesRouter.post("/aliases", async (c) => {
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const mode = parseMode(body.mode);
   const targetRows = parseTargetRows(body);
+  // An unchecked checkbox isn't submitted at all.
+  const clientEffortOverrides = body.clientEffortOverrides !== undefined;
 
   const rerender = (error: string) =>
     c.html(
-      Aliases({ aliases: listAliases(), models, modelsUnreachable, error, formValues: { name, mode, targets: targetRows } }) as string,
+      Aliases({
+        aliases: listAliases(),
+        models,
+        modelsUnreachable,
+        error,
+        formValues: { name, mode, clientEffortOverrides, targets: targetRows },
+      }) as string,
       400
     );
 
@@ -70,7 +79,7 @@ aliasesRouter.post("/aliases", async (c) => {
   }
 
   try {
-    createAlias(name, mode, targets);
+    createAlias(name, mode, targets, { clientEffortOverrides });
   } catch (err) {
     const message = err instanceof Error && /unique/i.test(err.message) ? `Alias "${name}" already exists` : "Failed to create alias";
     return rerender(message);

@@ -126,7 +126,7 @@ describe("admin dashboard", () => {
     expect(res.headers.get("location")).toBe("/admin/login");
   });
 
-  test("GET /admin/providers renders the unreachable banner when OpenCode is not running", async () => {
+  test("GET /admin/providers lists the providers, none configured yet", async () => {
     const loginRes = await app.fetch(
       new Request("http://localhost/admin/login", {
         method: "POST",
@@ -140,6 +140,8 @@ describe("admin dashboard", () => {
     const res = await app.fetch(new Request("http://localhost/admin/providers", { headers: { cookie } }));
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(text).toContain("OpenCode is not reachable");
+    for (const id of ["openai", "anthropic", "openrouter"]) expect(text).toContain(`/admin/providers/${id}/api-key`);
+    expect(text).toContain("not configured");
+    expect(text).toContain("Sign in with ChatGPT");
   });
 });

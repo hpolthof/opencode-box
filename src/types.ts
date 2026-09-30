@@ -23,14 +23,25 @@ export interface ModelAliasRecord {
   mode: ModelAliasMode;
   /** Ordered by `position` - for "priority" mode this IS the try order; for "random" mode it's just display order. */
   targets: ModelAliasTarget[];
+  /**
+   * When true, a client's explicit reasoning effort replaces the targets'
+   * pinned levels (mapped/clamped per target); when false (the default) the
+   * pinned levels always win.
+   */
+  clientEffortOverrides: boolean;
   createdAt: string;
 }
 
 export interface RequestLogEntry {
   apiKeyId: number | null;
   appName: string;
+  /** The model that served the request (for an alias: the target that answered). */
   model: string;
   variant: string | null;
+  /** The alias the client asked for, when it did. */
+  alias?: string | null;
+  /** How the request was served, when noteworthy: failover, ignored client effort, dropped params. */
+  notes?: string | null;
   stream: boolean;
   status: "ok" | "error";
   httpStatus: number;

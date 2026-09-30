@@ -30,7 +30,13 @@ export interface ChatCompletionRequest {
   model: string;
   messages: ChatMessage[];
   stream?: boolean;
+  stream_options?: { include_usage?: boolean };
   temperature?: number;
+  top_p?: number;
+  /** Output token cap, reasoning tokens included; wins over the legacy `max_tokens`. */
+  max_completion_tokens?: number;
+  max_tokens?: number;
+  prompt_cache_key?: string;
   response_format?: ResponseFormat;
   /**
    * Reasoning effort / thinking budget preset to use, e.g. "low" | "high" -
@@ -73,7 +79,7 @@ export interface ChatCompletionChunkDelta {
 export interface ChatCompletionChunkChoice {
   index: number;
   delta: ChatCompletionChunkDelta;
-  finish_reason: "stop" | null;
+  finish_reason: "stop" | "length" | null;
 }
 
 export interface ChatCompletionChunk {
@@ -82,6 +88,8 @@ export interface ChatCompletionChunk {
   created: number;
   model: string;
   choices: ChatCompletionChunkChoice[];
+  /** Only on the final chunk, and only when the client asked for it via `stream_options.include_usage`. */
+  usage?: ChatCompletionUsage;
 }
 
 export interface OpenAIErrorBody {
@@ -89,11 +97,12 @@ export interface OpenAIErrorBody {
     message: string;
     type: string;
     code?: string;
+    param?: string;
   };
 }
 
-export function openAIError(message: string, type: string, code?: string): OpenAIErrorBody {
-  return { error: { message, type, ...(code ? { code } : {}) } };
+export function openAIError(message: string, type: string, code?: string, param?: string): OpenAIErrorBody {
+  return { error: { message, type, ...(code ? { code } : {}), ...(param ? { param } : {}) } };
 }
 
 export interface ModelListEntry {

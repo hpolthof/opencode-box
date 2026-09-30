@@ -45,3 +45,17 @@ export function setSoftPurgeEnabled(enabled: boolean): void {
     deleteSetting(SOFT_PURGE_KEY);
   }
 }
+
+const PI_DEVICE_ID_KEY = "pi_device_id";
+
+/**
+ * Stable per-installation UUID that some pi-ai OAuth flows (Sign in with
+ * ChatGPT) send to identify this device. Created on first use.
+ */
+export function getOrCreatePiDeviceId(): string {
+  const existing = getSetting(PI_DEVICE_ID_KEY);
+  if (existing) return existing;
+  const id = crypto.randomUUID();
+  setSetting(PI_DEVICE_ID_KEY, id);
+  return id;
+}

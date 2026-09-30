@@ -5,6 +5,7 @@ interface AliasRow {
   id: number;
   alias: string;
   mode: string;
+  client_effort_overrides: number;
   created_at: string;
 }
 
@@ -30,6 +31,7 @@ function rowToRecord(row: AliasRow): ModelAliasRecord {
     alias: row.alias,
     mode: row.mode as ModelAliasMode,
     targets: loadTargets(row.id),
+    clientEffortOverrides: row.client_effort_overrides === 1,
     createdAt: row.created_at,
   };
 }
@@ -41,16 +43,24 @@ function insertTargets(aliasId: number, targets: ModelAliasTarget[]): void {
   targets.forEach((t, position) => insertTarget.run(aliasId, t.providerID, t.modelID, t.variant, position));
 }
 
-export function createAlias(alias: string, mode: ModelAliasMode, targets: ModelAliasTarget[]): ModelAliasRecord {
+export function createAlias(
+  alias: string,
+  mode: ModelAliasMode,
+  targets: ModelAliasTarget[],
+  options: { clientEffortOverrides?: boolean } = {}
+): ModelAliasRecord {
   if (targets.length === 0) throw new Error("An alias needs at least one target model");
+  const clientEffortOverrides = options.clientEffortOverrides ?? false;
 
   return db.transaction(() => {
     const row = db
-      .query<AliasRow, [string, string]>("INSERT INTO model_aliases (alias, mode) VALUES (?, ?) RETURNING *")
-      .get(alias, mode);
+      .query<AliasRow, [string, string, number]>(
+        "INSERT INTO model_aliases (alias, mode, client_effort_overrides) VALUES (?, ?, ?) RETURNING *"
+      )
+      .get(alias, mode, clientEffortOverrides ? 1 : 0);
     if (!row) throw new Error("Failed to create model alias");
     insertTargets(row.id, targets);
-    return { id: row.id, alias: row.alias, mode, targets, createdAt: row.created_at };
+    return { id: row.id, alias: row.alias, mode, targets, clientEffortOverrides, createdAt: row.created_at };
   })();
 }
 

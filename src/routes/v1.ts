@@ -1,33 +1,22 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { apiKeyAuth, getApiKey, type ApiKeyAuthEnv } from "../auth/apiKeyAuth";
+import { listCatalogModels, type ModelSummary } from "../catalog";
 import { findAliasByName, listAliases } from "../db/modelAliases";
 import { insertRequestLog } from "../db/requests";
-import {
-  createSession,
-  deleteSession,
-  listModels,
-  NO_TOOLS,
-  sendMessage,
-  sendPromptAsync,
-  subscribeEvents,
-  type SendMessageBody,
-} from "../opencode/client";
-import {
-  assistantMessageToOpenAIResponse,
-  buildOpenCodeFormat,
-  extractErrorMessage,
-  InvalidModelError,
-  messagesToOpenCodePrompt,
-  parseModelId,
-} from "../openai/translate";
-import { createOpenAIChatStream, type FirstOutcome, type OpenAIChatStream } from "../openai/stream";
-import { openAIError, type ChatCompletionRequest, type ModelListResponse } from "../openai/types";
-import { buildResponseObject, buildResponsesFormat, parseResponsesInput } from "../openai/responsesTranslate";
-import { createResponsesStream, type ResponsesStream } from "../openai/responsesStream";
+import { piMessageToResponseObject, responsesFormat, responsesInputToMessages } from "../openai/responsesTranslate";
+import { createResponsesStream } from "../openai/responsesStream";
 import type { ResponseCreateParams } from "../openai/responsesTypes";
-import type { ModelSummary, OpenCodeEvent, SessionPromptResponse } from "../opencode/client";
+import { InvalidModelError, parseModelId } from "../openai/translate";
+import { openAIError, type ChatCompletionRequest, type ModelListResponse } from "../openai/types";
+import type { TokenUsage } from "../openai/usage";
+import { createPiChatStream, piMessageToOpenAIResponse, piUsageToTokenUsage, type FirstOutcome, type StreamDoneResult } from "../piai/chat";
+import { gatewayError } from "../piai/errors";
+import type { RequestParams } from "../piai/params";
+import { piComplete, piStartStream, type PiRunRequest, type TargetError } from "../piai/run";
+import { isReasoningLevel, resolveReasoningVariant } from "../reasoning";
 import type { RequestLogEntry } from "../types";
-import { toTokenUsage, type TokenUsage } from "../openai/usage";
+import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai";
 
 export const v1Router = new Hono<ApiKeyAuthEnv>();
 
@@ -38,6 +27,8 @@ interface PendingLog {
   appName: string;
   model: string;
   variant: string | null;
+  alias?: string | null;
+  notes?: string | null;
   stream: boolean;
   requestBody: string | null;
 }
@@ -50,6 +41,8 @@ function baseLog(pending: PendingLog, start: number): Omit<RequestLogEntry, "sta
     appName: pending.appName,
     model: pending.model,
     variant: pending.variant,
+    alias: pending.alias ?? null,
+    notes: pending.notes ?? null,
     stream: pending.stream,
     requestBody: pending.requestBody,
     latencyMs: Date.now() - start,
@@ -100,8 +93,20 @@ interface ResolvedTarget {
   variant: string | undefined;
 }
 
-type ModelResolution =
-  | { ok: true; targets: ResolvedTarget[] }
+export type ModelResolution =
+  | {
+      ok: true;
+      /** Each target's `variant` is the level that will actually be sent (after mapping/clamping). */
+      targets: ResolvedTarget[];
+      /**
+       * True when the client sent an explicit effort to an alias that pins
+       * its levels (`clientEffortOverrides` off), so that effort was
+       * ignored. Always false for a plain model.
+       */
+      clientEffortIgnored: boolean;
+      /** The alias that was resolved, or null for a plain model. */
+      alias: string | null;
+    }
   | { ok: false; status: 400 | 403 | 404 | 502; message: string; type: "invalid_request_error" | "api_error"; code?: string };
 
 /** Fisher-Yates - used for alias `mode: "random"` so each request gets a fresh order to try targets in. */
@@ -121,18 +126,26 @@ function shuffled<T>(items: T[]): T[] {
  * isn't an alias, parsed as a plain "provider/model[#variant]" id.
  *
  * On success this returns an ORDERED list of one or more targets to attempt
- * in turn (see `sendWithFailover`/`attemptStreamingTarget` below) - a plain
+ * in turn (see `completeWithFailover`/`streamWithFailover` below) - a plain
  * model resolves to exactly one; an alias resolves to its configured
  * targets, ordered by `position` for `mode: "priority"` or shuffled fresh
  * for `mode: "random"`, with any target whose underlying model is no longer
- * available from OpenCode filtered out up front. Either way this confirms
+ * available (e.g. its provider was signed out) filtered out up front. Either way this confirms
  * the request is allowed for the calling key (checked against
  * `requestedModel` as typed - the alias name itself for an alias, not what
- * it points to, ignoring `explicitVariant` since an alias's variant is
- * always pinned) and, for a plain model, that it actually offers the
+ * it points to) and, for a plain model, that it actually offers the
  * requested reasoning variant.
+ *
+ * Reasoning levels (see `resolveReasoningVariant`): no level, or an
+ * explicit "none"/"off", means as little reasoning as the model allows. For
+ * a plain model any other level it doesn't offer is a 400. An alias uses
+ * each target's pinned level (a pinned "none" mapped the same way), unless
+ * it has `clientEffortOverrides` on and the client sent an effort: then
+ * that effort goes to every target, clamped to the nearest level each
+ * target offers. With the setting off, an explicit effort is ignored and
+ * `clientEffortIgnored` says so.
  */
-async function resolveRequestedModel(
+export async function resolveRequestedModel(
   requestedModel: string,
   explicitVariant: string | undefined,
   allowedModels: string[] | null
@@ -150,14 +163,32 @@ async function resolveRequestedModel(
     }
     let available: ModelSummary[];
     try {
-      available = await listModels();
+      available = await listCatalogModels();
     } catch {
-      return { ok: false, status: 502, message: "Failed to look up available models from OpenCode", type: "api_error" };
+      return { ok: false, status: 502, message: "Failed to look up available models", type: "api_error" };
+    }
+    const applyClientEffort = alias.clientEffortOverrides && explicitVariant !== undefined;
+    if (applyClientEffort && !isReasoningLevel(explicitVariant)) {
+      return {
+        ok: false,
+        status: 400,
+        message: `Variant "${explicitVariant}" is not a reasoning level (alias "${requestedModel}")`,
+        type: "invalid_request_error",
+        code: "variant_not_found",
+      };
     }
     const orderedTargets = alias.mode === "random" ? shuffled(alias.targets) : alias.targets;
-    const targets: ResolvedTarget[] = orderedTargets
-      .filter((t) => available.some((m) => m.providerID === t.providerID && m.modelID === t.modelID))
-      .map((t) => ({ providerID: t.providerID, modelID: t.modelID, variant: t.variant }));
+    const targets: ResolvedTarget[] = [];
+    for (const t of orderedTargets) {
+      const matched = available.find((m) => m.providerID === t.providerID && m.modelID === t.modelID);
+      if (!matched) continue;
+      const resolved = applyClientEffort
+        ? resolveReasoningVariant(explicitVariant, matched.variants, { clamp: true })
+        : resolveReasoningVariant(t.variant, matched.variants);
+      // A pinned level the model no longer offers (other than "none"/"off")
+      // is passed on as is, so prepare() rejects it and the next target runs.
+      targets.push({ providerID: t.providerID, modelID: t.modelID, variant: resolved.ok ? resolved.variant : t.variant });
+    }
     if (targets.length === 0) {
       return {
         ok: false,
@@ -166,7 +197,7 @@ async function resolveRequestedModel(
         type: "api_error",
       };
     }
-    return { ok: true, targets };
+    return { ok: true, targets, clientEffortIgnored: explicitVariant !== undefined && !alias.clientEffortOverrides, alias: alias.alias };
   }
 
   let providerID: string;
@@ -178,11 +209,11 @@ async function resolveRequestedModel(
     const message = err instanceof InvalidModelError ? err.message : "Invalid model id";
     return { ok: false, status: 400, message, type: "invalid_request_error" };
   }
-  const variant = explicitVariant ?? variantFromModel;
+  const requestedVariant = explicitVariant ?? variantFromModel;
   const requestedId = `${providerID}/${modelID}`;
 
   try {
-    const available = await listModels();
+    const available = await listCatalogModels();
     const matched = available.find((m) => m.id === requestedId);
     if (!matched) {
       return {
@@ -202,18 +233,22 @@ async function resolveRequestedModel(
         code: "model_not_allowed",
       };
     }
-    if (variant && matched.variants && !matched.variants.includes(variant)) {
+    // No level, or "none"/"off" -> as little reasoning as the model allows;
+    // any other level the model doesn't offer is rejected.
+    const resolved = resolveReasoningVariant(requestedVariant, matched.variants);
+    if (!resolved.ok) {
+      const knownVariants = matched.variants ?? [];
       return {
         ok: false,
         status: 400,
-        message: `Variant "${variant}" is not available for model "${requestedId}". Available variants: ${matched.variants.join(", ")}`,
+        message: `Variant "${requestedVariant}" is not available for model "${requestedId}". Available variants: ${knownVariants.join(", ") || "(this model has no reasoning levels)"}`,
         type: "invalid_request_error",
         code: "variant_not_found",
       };
     }
-    return { ok: true, targets: [{ providerID, modelID, variant }] };
+    return { ok: true, targets: [{ providerID, modelID, variant: resolved.variant }], clientEffortIgnored: false, alias: null };
   } catch {
-    return { ok: false, status: 502, message: "Failed to look up available models from OpenCode", type: "api_error" };
+    return { ok: false, status: 502, message: "Failed to look up available models", type: "api_error" };
   }
 }
 
@@ -227,170 +262,179 @@ async function resolveRequestedModel(
  */
 const FAILOVER_TIMEOUT_MS = 120_000;
 
-function abortAfter(ms: number): { signal: AbortSignal; cancel: () => void } {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  return { signal: controller.signal, cancel: () => clearTimeout(timer) };
-}
-
-function delayedOutcome(ms: number, message: string): { promise: Promise<{ ok: false; message: string }>; cancel: () => void } {
-  let timer: ReturnType<typeof setTimeout>;
-  const promise = new Promise<{ ok: false; message: string }>((resolve) => {
-    timer = setTimeout(() => resolve({ ok: false, message }), ms);
-  });
-  return { promise, cancel: () => clearTimeout(timer) };
-}
-
-interface NonStreamingAttempt {
-  target: ResolvedTarget;
-  sessionId: string;
-  result: SessionPromptResponse;
-}
-
 /**
  * Tries each target in order for a non-streaming request, moving on to the
- * next on an OpenCode-reported error, a thrown/network error, or a timeout
- * (treated as "non-responsive"). Returns the first success, or the last
- * failure's message if every target failed.
+ * next on a failure another target might not have (provider 5xx/429/auth,
+ * unavailable model, network error, timeout). Stops at a failure that marks
+ * the request itself as invalid (`failover: false`, e.g. a provider 400).
+ * Returns the first success, or the last failure.
  */
-async function sendWithFailover(
+async function completeWithFailover(
   targets: ResolvedTarget[],
-  buildBody: (target: ResolvedTarget) => Omit<SendMessageBody, "model" | "variant">
-): Promise<{ ok: true; attempt: NonStreamingAttempt } | { ok: false; message: string }> {
-  let lastMessage = "No target model available";
-  for (const target of targets) {
-    let sessionId: string;
-    try {
-      sessionId = (await createSession("gateway request")).id;
-    } catch {
-      lastMessage = "Failed to create OpenCode session";
-      continue;
-    }
-
-    const { signal, cancel } = abortAfter(FAILOVER_TIMEOUT_MS);
-    try {
-      const result = await sendMessage(
-        sessionId,
-        { ...buildBody(target), model: { providerID: target.providerID, modelID: target.modelID }, variant: target.variant },
-        signal
-      );
-      cancel();
-      if (result.info.error) {
-        lastMessage = extractErrorMessage(result.info.error);
-        deleteSession(sessionId);
-        continue;
-      }
-      return { ok: true, attempt: { target, sessionId, result } };
-    } catch (err) {
-      cancel();
-      lastMessage =
-        err instanceof Error && err.name === "AbortError"
-          ? `Model "${target.providerID}/${target.modelID}" did not respond in time`
-          : err instanceof Error
-            ? err.message
-            : "Unexpected error calling OpenCode";
-      deleteSession(sessionId);
-    }
+  request: PiRunRequest
+): Promise<
+  | { ok: true; target: ResolvedTarget; targetIndex: number; message: AssistantMessage; droppedParams: string[] }
+  | { ok: false; error: TargetError }
+> {
+  let lastError = gatewayError("No target model available");
+  for (const [targetIndex, target] of targets.entries()) {
+    const attempt = await piComplete(target, request, FAILOVER_TIMEOUT_MS);
+    if (attempt.ok) return { ok: true, target, targetIndex, message: attempt.message, droppedParams: attempt.droppedParams };
+    lastError = attempt.error;
+    if (!lastError.failover) break;
   }
-  return { ok: false, message: lastMessage };
-}
-
-interface StreamingAttempt<TStream extends { firstOutcome: Promise<FirstOutcome> }> {
-  target: ResolvedTarget;
-  sessionId: string;
-  abortController: AbortController;
-  built: TStream;
+  return { ok: false, error: lastError };
 }
 
 /**
- * Starts a streaming attempt against one target and waits only for its
- * `firstOutcome` (first content emitted, or a failure/timeout before any
- * content) - never for the full response. Nothing reaches the real HTTP
- * client from this attempt until the caller decides to commit to it (by
- * returning `attempt.built.stream` from the route), so a failure here can
- * still safely fail over to the next target. Once content has started
- * flowing for a committed attempt, this function is no longer in the
- * picture - the stream just runs to completion (or fails) on its own, same
- * as before this feature existed.
+ * Streaming counterpart: tries each target only until its stream gets off
+ * the ground (see `piStartStream`). Nothing reaches the client before a
+ * target is committed to, so a failure up to that point can still fail
+ * over; after it, the stream runs to completion (or fails) on its own.
  */
-async function attemptStreamingTarget<TStream extends { firstOutcome: Promise<FirstOutcome> }>(
-  target: ResolvedTarget,
-  buildBody: (target: ResolvedTarget) => Omit<SendMessageBody, "model" | "variant">,
-  buildStream: (events: AsyncIterable<OpenCodeEvent>, sessionId: string) => TStream
-): Promise<{ ok: true; attempt: StreamingAttempt<TStream> } | { ok: false; message: string }> {
-  let sessionId: string;
+async function streamWithFailover<TStream extends { firstOutcome: Promise<FirstOutcome>; stream: ReadableStream<Uint8Array>; done: Promise<StreamDoneResult> }>(
+  targets: ResolvedTarget[],
+  request: PiRunRequest,
+  build: (events: AsyncIterable<AssistantMessageEvent>) => TStream
+): Promise<
+  | { ok: true; target: ResolvedTarget; targetIndex: number; built: TStream; droppedParams: string[] }
+  | { ok: false; error: TargetError }
+> {
+  let lastError = gatewayError("No target model available");
+  for (const [targetIndex, target] of targets.entries()) {
+    const attempt = await piStartStream(target, request, build, FAILOVER_TIMEOUT_MS);
+    if (attempt.ok) return { ok: true, target, targetIndex, built: attempt.built, droppedParams: attempt.droppedParams };
+    lastError = attempt.error;
+    if (!lastError.failover) break;
+  }
+  return { ok: false, error: lastError };
+}
+
+/** Logs and answers a request whose every attempted target failed, with the (last) target's classified error. */
+function targetErrorResponse(c: Context<ApiKeyAuthEnv>, pending: PendingLog, start: number, rawBody: string, error: TargetError): Response {
+  logError(pending, start, error.status, error.message, rawBody);
+  return c.json(openAIError(error.message, error.type, error.code, error.param), error.status as ContentfulStatusCode);
+}
+
+type JsonBody<T> = { ok: true; rawBody: string; body: T } | { ok: false; response: Response };
+
+/** Reads and parses the request body, logging and answering 400 on failure. */
+async function readJsonBody<T>(c: Context<ApiKeyAuthEnv>, start: number): Promise<JsonBody<T>> {
+  const apiKey = getApiKey(c);
+  const unknownRequest = (requestBody: string | null): PendingLog => ({
+    apiKeyId: apiKey.id,
+    appName: apiKey.name,
+    model: "unknown",
+    variant: null,
+    stream: false,
+    requestBody,
+  });
+  let rawBody: string;
   try {
-    sessionId = (await createSession("gateway request")).id;
+    rawBody = await c.req.text();
   } catch {
-    return { ok: false, message: "Failed to create OpenCode session" };
+    const message = "Failed to read request body";
+    logError(unknownRequest(null), start, 400, message);
+    return { ok: false, response: c.json(openAIError(message, "invalid_request_error"), 400) };
   }
-
-  const { signal, cancel } = abortAfter(FAILOVER_TIMEOUT_MS);
   try {
-    await sendPromptAsync(
-      sessionId,
-      { ...buildBody(target), model: { providerID: target.providerID, modelID: target.modelID }, variant: target.variant },
-      signal
-    );
-    cancel();
-  } catch (err) {
-    cancel();
-    deleteSession(sessionId);
-    const message =
-      err instanceof Error && err.name === "AbortError"
-        ? `Model "${target.providerID}/${target.modelID}" did not respond in time`
-        : err instanceof Error
-          ? err.message
-          : "Failed to start OpenCode prompt";
-    return { ok: false, message };
+    return { ok: true, rawBody, body: JSON.parse(rawBody) as T };
+  } catch {
+    const message = "Request body must be valid JSON";
+    logError(unknownRequest(rawBody), start, 400, message, rawBody);
+    return { ok: false, response: c.json(openAIError(message, "invalid_request_error"), 400) };
   }
+}
 
-  const abortController = new AbortController();
-  const events = subscribeEvents(abortController.signal);
-  const built = buildStream(events, sessionId);
+function sseResponse(c: Context<ApiKeyAuthEnv>, stream: ReadableStream<Uint8Array>): Response {
+  c.header("Content-Type", "text/event-stream");
+  c.header("Cache-Control", "no-cache");
+  c.header("Connection", "keep-alive");
+  return c.newResponse(stream);
+}
 
-  const { promise: watchdog, cancel: cancelWatchdog } = delayedOutcome(
-    FAILOVER_TIMEOUT_MS,
-    `Model "${target.providerID}/${target.modelID}" did not respond in time`
-  );
-  const outcome = await Promise.race([built.firstOutcome, watchdog]);
-  cancelWatchdog();
+/** Logs a committed stream's outcome once it has finished. */
+function logWhenDone(pending: PendingLog, start: number, done: Promise<StreamDoneResult>): void {
+  done
+    .then((result) => {
+      if (result.errorMessage) {
+        logError(pending, start, 200, result.errorMessage, result.fullText);
+      } else {
+        logOk(pending, start, 200, result.fullText, result.usage);
+      }
+    })
+    .catch((err) => {
+      console.error("[routes/v1] streaming done handler failed:", err);
+    });
+}
 
-  if (outcome.ok) {
-    return { ok: true, attempt: { target, sessionId, abortController, built } };
+/**
+ * The sampling / limit fields shared by both endpoints; `capField` is the
+ * body field holding the output token cap (Chat: `max_completion_tokens`,
+ * else the legacy `max_tokens`; Responses: `max_output_tokens`). Values of
+ * the wrong type are ignored.
+ */
+function requestParams(body: Record<string, unknown>, capField: "max_output_tokens" | "max_completion_tokens" | "max_tokens"): RequestParams {
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const cap = body[capField];
+  return {
+    ...(typeof cap === "number" && Number.isInteger(cap) && cap > 0 ? { maxOutputTokens: cap, maxOutputTokensParam: capField } : {}),
+    ...(num(body.temperature) !== undefined ? { temperature: num(body.temperature) } : {}),
+    ...(num(body.top_p) !== undefined ? { topP: num(body.top_p) } : {}),
+    ...(typeof body.prompt_cache_key === "string" && body.prompt_cache_key.length > 0 ? { promptCacheKey: body.prompt_cache_key } : {}),
+  };
+}
+
+/**
+ * Records which target served the request - in the request log and in
+ * response headers, which clients can read without changing the OpenAI
+ * response shape their SDKs parse:
+ *
+ * - `x-served-model`: the concrete provider/model that answered;
+ * - `x-served-reasoning`: the reasoning level sent to the provider, or
+ *   `default` when none was (the model's own minimum);
+ * - `x-alias-target-index` (aliases only): 0-based position of that target,
+ *   and `x-failover: true` when it wasn't the first;
+ * - `x-reasoning-overridden: true`: the client's effort was ignored because
+ *   the alias pins its levels;
+ * - `x-dropped-params`: client parameters not forwarded to this model.
+ */
+function commitServed(
+  c: Context<ApiKeyAuthEnv>,
+  pending: PendingLog,
+  resolution: Extract<ModelResolution, { ok: true }>,
+  served: { target: ResolvedTarget; targetIndex: number; droppedParams: string[] }
+): void {
+  const { target, targetIndex, droppedParams } = served;
+  pending.model = `${target.providerID}/${target.modelID}`;
+  pending.variant = target.variant ?? null;
+  const notes: string[] = [];
+  c.header("x-served-model", pending.model);
+  c.header("x-served-reasoning", target.variant ?? "default");
+  if (resolution.alias) {
+    c.header("x-alias-target-index", String(targetIndex));
+    if (targetIndex > 0) {
+      c.header("x-failover", "true");
+      notes.push(`failover: served by target ${targetIndex + 1} of ${resolution.targets.length}`);
+    }
   }
-  abortController.abort();
-  deleteSession(sessionId);
-  return { ok: false, message: outcome.message };
+  if (resolution.clientEffortIgnored) {
+    c.header("x-reasoning-overridden", "true");
+    notes.push("client reasoning effort ignored: the alias pins its levels");
+  }
+  if (droppedParams.length > 0) {
+    c.header("x-dropped-params", droppedParams.join(", "));
+    notes.push(`not forwarded: ${droppedParams.join(", ")}`);
+  }
+  pending.notes = notes.length > 0 ? notes.join("; ") : null;
 }
 
 v1Router.post("/chat/completions", async (c) => {
   const start = Date.now();
   const apiKey = getApiKey(c);
-
-  let rawBody: string;
-  try {
-    rawBody = await c.req.text();
-  } catch (err) {
-    const message = "Failed to read request body";
-    logError({ apiKeyId: apiKey.id, appName: apiKey.name, model: "unknown", variant: null, stream: false, requestBody: null }, start, 400, message);
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
-
-  let body: ChatCompletionRequest;
-  try {
-    body = JSON.parse(rawBody) as ChatCompletionRequest;
-  } catch {
-    const message = "Request body must be valid JSON";
-    logError(
-      { apiKeyId: apiKey.id, appName: apiKey.name, model: "unknown", variant: null, stream: false, requestBody: rawBody },
-      start,
-      400,
-      message,
-      rawBody
-    );
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
+  const parsed = await readJsonBody<ChatCompletionRequest>(c, start);
+  if (!parsed.ok) return parsed.response;
+  const { rawBody, body } = parsed;
 
   const pending: PendingLog = {
     apiKeyId: apiKey.id,
@@ -416,107 +460,42 @@ v1Router.post("/chat/completions", async (c) => {
     logError(pending, start, resolution.status, resolution.message, rawBody);
     return c.json(openAIError(resolution.message, resolution.type, resolution.code), resolution.status);
   }
-  const { system, text } = messagesToOpenCodePrompt(body.messages);
-  const format = buildOpenCodeFormat(body.response_format);
-  const buildBody = (): Omit<SendMessageBody, "model" | "variant"> => ({
-    system,
-    parts: [{ type: "text", text }],
-    format,
-    tools: NO_TOOLS,
-  });
+  // A plain model resolves to one target whose (possibly defaulted)
+  // reasoning level is known up front - log it even if the call fails.
+  pending.alias = resolution.alias;
+  if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
+
+  const request: PiRunRequest = {
+    messages: body.messages,
+    responseFormat: body.response_format,
+    ...requestParams(body, typeof body.max_completion_tokens === "number" ? "max_completion_tokens" : "max_tokens"),
+  };
 
   if (!body.stream) {
-    const attempt = await sendWithFailover(resolution.targets, buildBody);
-    if (!attempt.ok) {
-      logError(pending, start, 502, attempt.message, rawBody);
-      return c.json(openAIError(attempt.message, "api_error"), 502);
-    }
-    const { target, sessionId, result } = attempt.attempt;
-    // Best-effort cleanup - don't make the caller wait on it, it has
-    // nothing to do with whether their answer is ready.
-    deleteSession(sessionId);
-    pending.model = `${target.providerID}/${target.modelID}`;
-    pending.variant = target.variant ?? null;
-
-    const response = assistantMessageToOpenAIResponse(body.model, result.info, result.parts);
-    const responseBody = JSON.stringify(response);
-    logOk(pending, start, 200, responseBody, result.info.tokens ? toTokenUsage(result.info.tokens) : null);
+    const result = await completeWithFailover(resolution.targets, request);
+    if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
+    commitServed(c, pending, resolution, result);
+    const response = piMessageToOpenAIResponse(body.model, result.message);
+    logOk(pending, start, 200, JSON.stringify(response), piUsageToTokenUsage(result.message.usage));
     return c.json(response, 200);
   }
 
-  // Streaming path: try each target in turn, but only for getting the
-  // response off the ground - see attemptStreamingTarget's docstring.
-  let lastMessage = "No target model available";
-  let selected: StreamingAttempt<OpenAIChatStream> | null = null;
-  for (const target of resolution.targets) {
-    const attempt = await attemptStreamingTarget(target, buildBody, (events, sessionId) =>
-      createOpenAIChatStream(events, sessionId, body.model)
-    );
-    if (attempt.ok) {
-      selected = attempt.attempt;
-      break;
-    }
-    lastMessage = attempt.message;
-  }
-
-  if (!selected) {
-    logError(pending, start, 502, lastMessage, rawBody);
-    return c.json(openAIError(lastMessage, "api_error"), 502);
-  }
-
-  const { target: selectedTarget, sessionId: selectedSessionId, abortController: selectedAbort, built } = selected;
-  pending.model = `${selectedTarget.providerID}/${selectedTarget.modelID}`;
-  pending.variant = selectedTarget.variant ?? null;
-
-  built.done
-    .then((result) => {
-      selectedAbort.abort();
-      if (result.errorMessage) {
-        logError(pending, start, 200, result.errorMessage, result.fullText);
-      } else {
-        logOk(pending, start, 200, result.fullText, result.usage);
-      }
-    })
-    .catch((err) => {
-      console.error("[routes/v1] streaming done handler failed:", err);
-    })
-    .finally(() => {
-      deleteSession(selectedSessionId);
-    });
-
-  c.header("Content-Type", "text/event-stream");
-  c.header("Cache-Control", "no-cache");
-  c.header("Connection", "keep-alive");
-  return c.newResponse(built.stream);
+  const includeUsage = body.stream_options?.include_usage === true;
+  const result = await streamWithFailover(resolution.targets, request, (events) =>
+    createPiChatStream(events, body.model, { includeUsage })
+  );
+  if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
+  commitServed(c, pending, resolution, result);
+  logWhenDone(pending, start, result.built.done);
+  return sseResponse(c, result.built.stream);
 });
 
 v1Router.post("/responses", async (c) => {
   const start = Date.now();
   const apiKey = getApiKey(c);
-
-  let rawBody: string;
-  try {
-    rawBody = await c.req.text();
-  } catch {
-    const message = "Failed to read request body";
-    logError({ apiKeyId: apiKey.id, appName: apiKey.name, model: "unknown", variant: null, stream: false, requestBody: null }, start, 400, message);
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
-
-  let body: ResponseCreateParams;
-  try {
-    body = JSON.parse(rawBody) as ResponseCreateParams;
-  } catch {
-    const message = "Request body must be valid JSON";
-    logError(
-      { apiKeyId: apiKey.id, appName: apiKey.name, model: "unknown", variant: null, stream: false, requestBody: rawBody },
-      start,
-      400,
-      message,
-      rawBody
-    );
-    return c.json(openAIError(message, "invalid_request_error"), 400);
-  }
+  const parsed = await readJsonBody<ResponseCreateParams>(c, start);
+  if (!parsed.ok) return parsed.response;
+  const { rawBody, body } = parsed;
 
   const pending: PendingLog = {
     apiKeyId: apiKey.id,
@@ -535,7 +514,7 @@ v1Router.post("/responses", async (c) => {
   }
 
   if (typeof body.previous_response_id === "string" && body.previous_response_id.length > 0) {
-    const message = "`previous_response_id` is not supported - this gateway is stateless, so every call starts a fresh session";
+    const message = "`previous_response_id` is not supported - this gateway is stateless, so send the full conversation as `input`";
     logError(pending, start, 400, message, rawBody);
     return c.json(openAIError(message, "invalid_request_error"), 400);
   }
@@ -555,89 +534,40 @@ v1Router.post("/responses", async (c) => {
     logError(pending, start, resolution.status, resolution.message, rawBody);
     return c.json(openAIError(resolution.message, resolution.type, resolution.code), resolution.status);
   }
-  const { system, text } = parseResponsesInput(body.input, body.instructions);
-  const format = buildResponsesFormat(body.text);
+  pending.alias = resolution.alias;
+  if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
+
   const instructions = typeof body.instructions === "string" ? body.instructions : null;
-  const buildBody = (): Omit<SendMessageBody, "model" | "variant"> => ({
-    system,
-    parts: [{ type: "text", text }],
-    format,
-    tools: NO_TOOLS,
-  });
+  const request: PiRunRequest = {
+    messages: responsesInputToMessages(body.input, instructions ?? undefined),
+    responseFormat: responsesFormat(body.text),
+    ...requestParams(body, "max_output_tokens"),
+  };
+  const responseId = `resp_${crypto.randomUUID().replace(/-/g, "")}`;
 
   if (!body.stream) {
-    const attempt = await sendWithFailover(resolution.targets, buildBody);
-    if (!attempt.ok) {
-      logError(pending, start, 502, attempt.message, rawBody);
-      return c.json(openAIError(attempt.message, "api_error"), 502);
-    }
-    const { target, sessionId, result } = attempt.attempt;
-    // Best-effort cleanup - don't make the caller wait on it, it has
-    // nothing to do with whether their answer is ready.
-    deleteSession(sessionId);
-    pending.model = `${target.providerID}/${target.modelID}`;
-    pending.variant = target.variant ?? null;
-
-    const response = buildResponseObject({ id: `resp_${result.info.id}`, model: body.model, instructions, info: result.info, parts: result.parts });
-    const responseBody = JSON.stringify(response);
-    logOk(pending, start, 200, responseBody, result.info.tokens ? toTokenUsage(result.info.tokens) : null);
+    const result = await completeWithFailover(resolution.targets, request);
+    if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
+    commitServed(c, pending, resolution, result);
+    const response = piMessageToResponseObject({ id: responseId, model: body.model, instructions, message: result.message });
+    logOk(pending, start, 200, JSON.stringify(response), piUsageToTokenUsage(result.message.usage));
     return c.json(response, 200);
   }
 
-  // Streaming path: try each target in turn, but only for getting the
-  // response off the ground - see attemptStreamingTarget's docstring.
-  let lastMessage = "No target model available";
-  let selected: StreamingAttempt<ResponsesStream> | null = null;
-  for (const target of resolution.targets) {
-    const attempt = await attemptStreamingTarget(target, buildBody, (events, sessionId) =>
-      createResponsesStream(events, sessionId, `resp_${sessionId}`, body.model, instructions)
-    );
-    if (attempt.ok) {
-      selected = attempt.attempt;
-      break;
-    }
-    lastMessage = attempt.message;
-  }
-
-  if (!selected) {
-    logError(pending, start, 502, lastMessage, rawBody);
-    return c.json(openAIError(lastMessage, "api_error"), 502);
-  }
-
-  const { target: selectedTarget, sessionId: selectedSessionId, abortController: selectedAbort, built } = selected;
-  pending.model = `${selectedTarget.providerID}/${selectedTarget.modelID}`;
-  pending.variant = selectedTarget.variant ?? null;
-
-  built.done
-    .then((result) => {
-      selectedAbort.abort();
-      if (result.errorMessage) {
-        logError(pending, start, 200, result.errorMessage, result.fullText);
-      } else {
-        logOk(pending, start, 200, result.fullText, result.usage);
-      }
-    })
-    .catch((err) => {
-      console.error("[routes/v1] responses streaming done handler failed:", err);
-    })
-    .finally(() => {
-      deleteSession(selectedSessionId);
-    });
-
-  c.header("Content-Type", "text/event-stream");
-  c.header("Cache-Control", "no-cache");
-  c.header("Connection", "keep-alive");
-  return c.newResponse(built.stream);
+  const result = await streamWithFailover(resolution.targets, request, (events) =>
+    createResponsesStream(events, responseId, body.model, instructions)
+  );
+  if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
+  commitServed(c, pending, resolution, result);
+  logWhenDone(pending, start, result.built.done);
+  return sseResponse(c, result.built.stream);
 });
 
 v1Router.get("/models", async (c) => {
   try {
     const apiKey = getApiKey(c);
-    const all = await listModels();
-    const filtered = apiKey.allowedModels
-      ? all.filter((m) => apiKey.allowedModels!.includes(m.id))
-      : all;
-
+    const all = await listCatalogModels();
+    const filtered = apiKey.allowedModels ? all.filter((m) => apiKey.allowedModels!.includes(m.id)) : all;
     const aliases = apiKey.allowedModels
       ? listAliases().filter((a) => apiKey.allowedModels!.includes(a.alias))
       : listAliases();
@@ -649,20 +579,19 @@ v1Router.get("/models", async (c) => {
           id: m.id,
           object: "model" as const,
           created: 0,
-          owned_by: "opencode",
+          owned_by: m.providerID,
           ...(m.variants && m.variants.length > 0 ? { variants: m.variants } : {}),
         })),
         ...aliases.map((a) => ({
           id: a.alias,
           object: "model" as const,
           created: 0,
-          owned_by: "opencode",
+          owned_by: "alias",
         })),
       ],
     };
     return c.json(response, 200);
-  } catch (err) {
-    const message = "Failed to list models from OpenCode";
-    return c.json(openAIError(message, "api_error"), 502);
+  } catch {
+    return c.json(openAIError("Failed to list models", "api_error"), 502);
   }
 });

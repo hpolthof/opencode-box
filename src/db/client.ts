@@ -48,9 +48,33 @@ if (legacyAliasRows.length > 0) {
 // already-existing `requests` table, so a column added after a database was
 // first created (like `variant`) needs to be backfilled explicitly here.
 const requestsColumns = db.query<{ name: string }, []>("PRAGMA table_info(requests)").all();
-for (const column of ["variant TEXT", "reasoning_tokens INTEGER", "cache_read_tokens INTEGER", "cache_write_tokens INTEGER"]) {
+for (const column of ["variant TEXT", "reasoning_tokens INTEGER", "cache_read_tokens INTEGER", "cache_write_tokens INTEGER", "alias TEXT", "notes TEXT"]) {
   const name = column.split(" ")[0];
   if (!requestsColumns.some((c) => c.name === name)) {
     db.exec(`ALTER TABLE requests ADD COLUMN ${column}`);
   }
 }
+
+// Same for `model_aliases.client_effort_overrides`: existing aliases get 0,
+// i.e. they keep pinning their targets' reasoning levels.
+const aliasColumns = db.query<{ name: string }, []>("PRAGMA table_info(model_aliases)").all();
+if (!aliasColumns.some((c) => c.name === "client_effort_overrides")) {
+  db.exec("ALTER TABLE model_aliases ADD COLUMN client_effort_overrides INTEGER NOT NULL DEFAULT 0");
+}
+
+// Migration: during the pi-ai proof of concept, pi-ai models were addressed
+// as "pi/<provider>/<model>" next to OpenCode's "<provider>/<model>". With
+// OpenCode gone they use the plain form, so strip the prefix from stored
+// alias targets, key allow-lists and logged request models. Idempotent.
+db.transaction(() => {
+  db.exec("UPDATE model_alias_targets SET provider_id = substr(provider_id, 4) WHERE provider_id LIKE 'pi/%'");
+  db.exec("UPDATE requests SET model = substr(model, 4) WHERE model LIKE 'pi/%'");
+  const keys = db
+    .query<{ id: number; allowed_models: string }, []>("SELECT id, allowed_models FROM api_keys WHERE allowed_models LIKE '%\"pi/%'")
+    .all();
+  const update = db.query("UPDATE api_keys SET allowed_models = ? WHERE id = ?");
+  for (const key of keys) {
+    const models = (JSON.parse(key.allowed_models) as string[]).map((m) => (m.startsWith("pi/") ? m.slice(3) : m));
+    update.run(JSON.stringify([...new Set(models)]), key.id);
+  }
+})();

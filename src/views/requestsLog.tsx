@@ -439,7 +439,10 @@ export const RequestsLog: FC<RequestsLogProps> = ({ rows, total, pageSize, filte
                     {row.createdAt}
                   </td>
                   <td>{row.appName}</td>
-                  <td class="mono">{row.model}</td>
+                  <td class="mono">
+                    {row.model}
+                    {row.alias && <div class="muted">via {row.alias}</div>}
+                  </td>
                   <td class="mono">{row.variant ?? "-"}</td>
                   <td>{row.stream ? "yes" : "no"}</td>
                   <td>{row.status === "ok" ? <StatusPill tone="ok">ok</StatusPill> : <StatusPill tone="error">error</StatusPill>}</td>
@@ -506,7 +509,15 @@ export const RequestsLog: FC<RequestsLogProps> = ({ rows, total, pageSize, filte
                               <span class="detail-stat-label">Variant</span>
                               <span class="detail-stat-value mono">{row.variant ?? "-"}</span>
                             </div>
+                            {row.alias && (
+                              <div class="detail-stat">
+                                <span class="detail-stat-label">Alias</span>
+                                <span class="detail-stat-value mono">{row.alias}</span>
+                              </div>
+                            )}
                           </div>
+
+                          {row.notes && <div class="banner">{row.notes}</div>}
 
                           {row.errorMessage && <div class="banner error">{row.errorMessage}</div>}
 

@@ -1,14 +1,14 @@
 import type { FC } from "hono/jsx";
 import { Layout } from "./layout";
 import type { ModelAliasMode, ModelAliasRecord } from "../types";
-import type { ModelSummary } from "../opencode/client";
+import type { ModelSummary } from "../catalog";
 
 interface AliasesProps {
   aliases: ModelAliasRecord[];
   models?: ModelSummary[];
   modelsUnreachable?: boolean;
   error?: string;
-  formValues?: { name: string; mode: ModelAliasMode; targets: { model: string; variant: string }[] };
+  formValues?: { name: string; mode: ModelAliasMode; clientEffortOverrides: boolean; targets: { model: string; variant: string }[] };
 }
 
 const ALIASES_SCRIPT = `
@@ -131,7 +131,7 @@ export const Aliases: FC<AliasesProps> = ({ aliases, models, modelsUnreachable, 
       {modelsUnreachable || modelsByProvider.size === 0 ? (
         <p class="muted">
           {modelsUnreachable
-            ? "OpenCode is not reachable — can't create an alias right now."
+            ? "Could not load the model list — can't create an alias right now."
             : "No connected model currently exposes reasoning variants, so there's nothing to alias yet."}
         </p>
       ) : (
@@ -164,6 +164,17 @@ export const Aliases: FC<AliasesProps> = ({ aliases, models, modelsUnreachable, 
           <button type="button" id="alias-add-target" class="row-toggle" style="margin: 0.5rem 0 1rem;">
             + Add another model
           </button>
+
+          <div style="margin-bottom: 1rem;">
+            <label>
+              <input type="checkbox" name="clientEffortOverrides" value="1" checked={formValues?.clientEffortOverrides ?? false} />{" "}
+              Client effort overrides the pinned level{" "}
+              <span class="muted">
+                — a request's <code>reasoning_effort</code> / <code>reasoning.effort</code> is used instead, mapped to the nearest
+                level each target offers; otherwise the pinned levels always apply
+              </span>
+            </label>
+          </div>
 
           <div>
             <button type="submit">Create alias</button>
@@ -198,7 +209,14 @@ export const Aliases: FC<AliasesProps> = ({ aliases, models, modelsUnreachable, 
             {aliases.map((alias) => (
               <tr>
                 <td class="mono">{alias.alias}</td>
-                <td>{alias.mode}</td>
+                <td>
+                  {alias.mode}
+                  {alias.clientEffortOverrides && (
+                    <div class="muted" title="A client's reasoning effort overrides the pinned levels">
+                      client effort overrides
+                    </div>
+                  )}
+                </td>
                 <td class="mono">
                   {alias.targets.map((t, i) => (
                     <div>
