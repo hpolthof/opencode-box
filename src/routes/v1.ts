@@ -10,6 +10,7 @@ import { InvalidModelError, parseModelId } from "../openai/translate";
 import { openAIError, type ChatCompletionRequest, type ModelListResponse } from "../openai/types";
 import type { TokenUsage } from "../openai/usage";
 import { createPiChatStream, piMessageToOpenAIResponse, piUsageToTokenUsage, type FirstOutcome, type StreamDoneResult } from "../piai/chat";
+import type { RequestParams } from "../piai/params";
 import { piComplete, piStartStream, type PiRunRequest } from "../piai/run";
 import { defaultReasoningVariant, normalizeReasoningVariant } from "../reasoning";
 import type { RequestLogEntry } from "../types";
@@ -231,11 +232,11 @@ const FAILOVER_TIMEOUT_MS = 120_000;
 async function completeWithFailover(
   targets: ResolvedTarget[],
   request: PiRunRequest
-): Promise<{ ok: true; target: ResolvedTarget; message: AssistantMessage } | { ok: false; message: string }> {
+): Promise<{ ok: true; target: ResolvedTarget; message: AssistantMessage; droppedParams: string[] } | { ok: false; message: string }> {
   let lastMessage = "No target model available";
   for (const target of targets) {
     const attempt = await piComplete(target, request, FAILOVER_TIMEOUT_MS);
-    if (attempt.ok) return { ok: true, target, message: attempt.message };
+    if (attempt.ok) return { ok: true, target, message: attempt.message, droppedParams: attempt.droppedParams };
     lastMessage = attempt.message;
   }
   return { ok: false, message: lastMessage };
@@ -251,11 +252,11 @@ async function streamWithFailover<TStream extends { firstOutcome: Promise<FirstO
   targets: ResolvedTarget[],
   request: PiRunRequest,
   build: (events: AsyncIterable<AssistantMessageEvent>) => TStream
-): Promise<{ ok: true; target: ResolvedTarget; built: TStream } | { ok: false; message: string }> {
+): Promise<{ ok: true; target: ResolvedTarget; built: TStream; droppedParams: string[] } | { ok: false; message: string }> {
   let lastMessage = "No target model available";
   for (const target of targets) {
     const attempt = await piStartStream(target, request, build, FAILOVER_TIMEOUT_MS);
-    if (attempt.ok) return { ok: true, target, built: attempt.built };
+    if (attempt.ok) return { ok: true, target, built: attempt.built, droppedParams: attempt.droppedParams };
     lastMessage = attempt.message;
   }
   return { ok: false, message: lastMessage };
@@ -313,6 +314,23 @@ function logWhenDone(pending: PendingLog, start: number, done: Promise<StreamDon
     });
 }
 
+/**
+ * The sampling / limit fields shared by both endpoints; `capField` is the
+ * body field holding the output token cap (Chat: `max_completion_tokens`,
+ * else the legacy `max_tokens`; Responses: `max_output_tokens`). Values of
+ * the wrong type are ignored.
+ */
+function requestParams(body: Record<string, unknown>, capField: "max_output_tokens" | "max_completion_tokens" | "max_tokens"): RequestParams {
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const cap = body[capField];
+  return {
+    ...(typeof cap === "number" && Number.isInteger(cap) && cap > 0 ? { maxOutputTokens: cap, maxOutputTokensParam: capField } : {}),
+    ...(num(body.temperature) !== undefined ? { temperature: num(body.temperature) } : {}),
+    ...(num(body.top_p) !== undefined ? { topP: num(body.top_p) } : {}),
+    ...(typeof body.prompt_cache_key === "string" && body.prompt_cache_key.length > 0 ? { promptCacheKey: body.prompt_cache_key } : {}),
+  };
+}
+
 function commitTarget(pending: PendingLog, target: ResolvedTarget): void {
   pending.model = `${target.providerID}/${target.modelID}`;
   pending.variant = target.variant ?? null;
@@ -353,7 +371,11 @@ v1Router.post("/chat/completions", async (c) => {
   // reasoning level is known up front - log it even if the call fails.
   if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
 
-  const request: PiRunRequest = { messages: body.messages, responseFormat: body.response_format };
+  const request: PiRunRequest = {
+    messages: body.messages,
+    responseFormat: body.response_format,
+    ...requestParams(body, typeof body.max_completion_tokens === "number" ? "max_completion_tokens" : "max_tokens"),
+  };
 
   if (!body.stream) {
     const result = await completeWithFailover(resolution.targets, request);
@@ -430,6 +452,7 @@ v1Router.post("/responses", async (c) => {
   const request: PiRunRequest = {
     messages: responsesInputToMessages(body.input, instructions ?? undefined),
     responseFormat: responsesFormat(body.text),
+    ...requestParams(body, "max_output_tokens"),
   };
   const responseId = `resp_${crypto.randomUUID().replace(/-/g, "")}`;
 

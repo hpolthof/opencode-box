@@ -51,6 +51,11 @@ export interface ResponseCreateParams {
   reasoning?: ReasoningParam;
   text?: ResponseTextConfig;
   previous_response_id?: string;
+  /** Output token cap, reasoning tokens included. */
+  max_output_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  prompt_cache_key?: string;
   [key: string]: unknown;
 }
 
@@ -98,6 +103,8 @@ export interface ResponseObject {
   output_text: string;
   usage: ResponseUsage | null;
   error: ResponseErrorObject | null;
+  /** Set when `status` is "incomplete": the answer was cut off at `max_output_tokens`. */
+  incomplete_details: { reason: "max_output_tokens" } | null;
   instructions: string | null;
 }
 
@@ -106,7 +113,8 @@ export interface ResponseObject {
 //
 // Real Responses API streaming does NOT end with a "data: [DONE]" sentinel
 // (unlike Chat Completions) - the stream just closes after
-// response.completed / response.failed. Each frame is `data: <json>\n\n`.
+// response.completed / response.incomplete / response.failed. Each frame
+// is `data: <json>\n\n`.
 // This gateway implements only the minimal event sequence needed for plain
 // text (+ structured-output) generation: no tool-call, audio, image, or MCP
 // event types, since tools are disabled gateway-wide (see NO_TOOLS).
@@ -180,6 +188,13 @@ export interface ResponseCompletedEvent {
   sequence_number: number;
 }
 
+/** Ends the stream instead of `response.completed` when the answer hit `max_output_tokens`. */
+export interface ResponseIncompleteEvent {
+  type: "response.incomplete";
+  response: ResponseObject;
+  sequence_number: number;
+}
+
 export interface ResponseFailedEvent {
   type: "response.failed";
   response: ResponseObject;
@@ -196,4 +211,5 @@ export type ResponseStreamEvent =
   | ResponseContentPartDoneEvent
   | ResponseOutputItemDoneEvent
   | ResponseCompletedEvent
+  | ResponseIncompleteEvent
   | ResponseFailedEvent;

@@ -32,6 +32,11 @@ export interface ChatCompletionRequest {
   stream?: boolean;
   stream_options?: { include_usage?: boolean };
   temperature?: number;
+  top_p?: number;
+  /** Output token cap, reasoning tokens included; wins over the legacy `max_tokens`. */
+  max_completion_tokens?: number;
+  max_tokens?: number;
+  prompt_cache_key?: string;
   response_format?: ResponseFormat;
   /**
    * Reasoning effort / thinking budget preset to use, e.g. "low" | "high" -
