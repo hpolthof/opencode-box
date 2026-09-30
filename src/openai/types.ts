@@ -30,6 +30,7 @@ export interface ChatCompletionRequest {
   model: string;
   messages: ChatMessage[];
   stream?: boolean;
+  stream_options?: { include_usage?: boolean };
   temperature?: number;
   response_format?: ResponseFormat;
   /**
@@ -73,7 +74,7 @@ export interface ChatCompletionChunkDelta {
 export interface ChatCompletionChunkChoice {
   index: number;
   delta: ChatCompletionChunkDelta;
-  finish_reason: "stop" | null;
+  finish_reason: "stop" | "length" | null;
 }
 
 export interface ChatCompletionChunk {
@@ -82,6 +83,8 @@ export interface ChatCompletionChunk {
   created: number;
   model: string;
   choices: ChatCompletionChunkChoice[];
+  /** Only on the final chunk, and only when the client asked for it via `stream_options.include_usage`. */
+  usage?: ChatCompletionUsage;
 }
 
 export interface OpenAIErrorBody {

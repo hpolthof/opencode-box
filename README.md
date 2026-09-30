@@ -30,8 +30,8 @@ them in your shell - `docker compose` reads a `.env` file automatically):
 | ------------------------ | -------- | -------------------------------------------------------------------- |
 | `ADMIN_PASSWORD`         | yes      | Password for the `/admin` dashboard.                                |
 | `ADMIN_SESSION_SECRET`   | yes      | Long random string used to sign the admin session cookie.          |
-| `ANTHROPIC_API_KEY`      | no       | Passed through to the OpenCode process if you reference it from `opencode.json`. |
-| `OPENAI_API_KEY`         | no       | Same, for OpenAI.                                                   |
+| `ANTHROPIC_API_KEY`      | no       | Passed through to the OpenCode process if you reference it from `opencode.json`; also enables `pi/anthropic/...` models. |
+| `OPENAI_API_KEY`         | no       | Same, for OpenAI (and `pi/openai/...` models).                     |
 | `OPENROUTER_API_KEY`     | no       | Same, for OpenRouter.                                               |
 
 The container fails fast (exits immediately with an error) if `ADMIN_PASSWORD` or
@@ -118,6 +118,25 @@ curl http://localhost:8080/v1/chat/completions \
 - No legacy `/v1/completions`.
 - Each chat completion call maps to a brand-new, short-lived OpenCode session - there is no
   server-side conversation memory beyond what the client sends in each call's `messages` array.
+
+## Experimental: pi-ai backend (proof of concept)
+
+Model ids starting with `pi/` - e.g. `pi/anthropic/claude-sonnet-4-5` or `pi/openai/gpt-5-mini#low` -
+bypass OpenCode on `POST /v1/chat/completions` and call the provider in-process through
+[`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai). Unlike the OpenCode
+path, no agent system prompt is added (only your own system messages go upstream), the `messages`
+history is sent as real turns instead of one flattened transcript, and streaming is passed through
+token by token.
+
+- Providers: Anthropic and OpenAI, authenticated with `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in
+  the gateway's own environment. Models show up in `GET /v1/models` (owned by `pi-ai`) once their
+  key is set.
+- `reasoning_effort` (or a `#level` suffix) takes pi-ai's levels: `minimal`, `low`, `medium`,
+  `high`, `xhigh`, `max`, as far as the model supports them.
+- `response_format: json_schema` is mapped to each API's native structured output (OpenAI
+  `response_format` / `text.format`, Anthropic `output_config.format`).
+- `stream_options.include_usage` adds a final usage chunk.
+- Not yet: `/v1/responses`, model aliases/failover, OAuth logins, tool calling.
 
 ## Data & persistence
 

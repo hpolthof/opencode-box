@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { apiKeyAuth, getApiKey, type ApiKeyAuthEnv } from "../auth/apiKeyAuth";
 import { findAliasByName, listAliases } from "../db/modelAliases";
 import { insertRequestLog } from "../db/requests";
@@ -28,6 +28,17 @@ import type { ResponseCreateParams } from "../openai/responsesTypes";
 import type { ModelSummary, OpenCodeEvent, SessionPromptResponse } from "../opencode/client";
 import type { RequestLogEntry } from "../types";
 import { toTokenUsage, type TokenUsage } from "../openai/usage";
+import { findPiModel, getPiModels, isPiModelId, listPiModels } from "../piai/models";
+import {
+  createPiChatStream,
+  messagesToPiContext,
+  piMessageToOpenAIResponse,
+  piUsageToTokenUsage,
+  splitVariant,
+  structuredOutputHook,
+  UnsupportedResponseFormatError,
+  type ThinkingLevel,
+} from "../piai/chat";
 
 export const v1Router = new Hono<ApiKeyAuthEnv>();
 
@@ -364,6 +375,113 @@ async function attemptStreamingTarget<TStream extends { firstOutcome: Promise<Fi
   return { ok: false, message: outcome.message };
 }
 
+/**
+ * Proof of concept: /chat/completions for "pi/<provider>/<model>" ids,
+ * served in-process by pi-ai instead of OpenCode - no agent system prompt,
+ * real multi-turn history, token-by-token streaming. Aliases/failover are
+ * not wired up for this path yet.
+ */
+async function handlePiChatCompletion(
+  c: Context<ApiKeyAuthEnv>,
+  body: ChatCompletionRequest,
+  pending: PendingLog,
+  start: number,
+  explicitVariant: string | undefined,
+  allowedModels: string[] | null
+) {
+  const rawBody = pending.requestBody;
+  const { base, variant: variantFromModel } = splitVariant(body.model);
+  const variant = explicitVariant ?? variantFromModel;
+  pending.model = base;
+  pending.variant = variant ?? null;
+
+  const fail = (status: 400 | 403 | 404 | 502, message: string, type: string, code?: string) => {
+    logError(pending, start, status, message, rawBody);
+    return c.json(openAIError(message, type, code), status);
+  };
+
+  if (allowedModels && !allowedModels.includes(base)) {
+    return fail(403, `API key is not permitted to use model "${base}"`, "invalid_request_error", "model_not_allowed");
+  }
+  const summary = await findPiModel(base);
+  if (!summary) {
+    return fail(404, `Model "${base}" is not available on this gateway`, "invalid_request_error", "model_not_found");
+  }
+  if (variant && !summary.variants.includes(variant)) {
+    return fail(
+      400,
+      `Variant "${variant}" is not available for model "${base}". Available variants: ${summary.variants.join(", ") || "none"}`,
+      "invalid_request_error",
+      "variant_not_found"
+    );
+  }
+
+  let onPayload: ((payload: unknown) => unknown) | undefined;
+  try {
+    onPayload = structuredOutputHook(summary.model.api, body.response_format);
+  } catch (err) {
+    if (err instanceof UnsupportedResponseFormatError) return fail(400, err.message, "invalid_request_error");
+    throw err;
+  }
+
+  const context = messagesToPiContext(body.messages, summary.model);
+  const abort = new AbortController();
+  const options = {
+    signal: abort.signal,
+    ...(variant ? { reasoning: variant as ThinkingLevel } : {}),
+    ...(onPayload ? { onPayload } : {}),
+  };
+  const timeout = setTimeout(() => abort.abort(), FAILOVER_TIMEOUT_MS);
+
+  if (!body.stream) {
+    let message;
+    try {
+      message = await getPiModels().completeSimple(summary.model, context, options);
+    } catch (err) {
+      return fail(502, err instanceof Error ? err.message : "Unexpected error calling pi-ai", "api_error");
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (message.stopReason === "error" || message.stopReason === "aborted") {
+      const reason = abort.signal.aborted ? `Model "${base}" did not respond in time` : message.errorMessage ?? "Request failed";
+      return fail(502, reason, "api_error");
+    }
+    const response = piMessageToOpenAIResponse(body.model, message);
+    const responseBody = JSON.stringify(response);
+    logOk(pending, start, 200, responseBody, piUsageToTokenUsage(message.usage));
+    return c.json(response, 200);
+  }
+
+  const built = createPiChatStream(getPiModels().streamSimple(summary.model, context, options), body.model, {
+    includeUsage: body.stream_options?.include_usage === true,
+  });
+  const outcome = await built.firstOutcome;
+  if (!outcome.ok) {
+    clearTimeout(timeout);
+    return fail(502, abort.signal.aborted ? `Model "${base}" did not respond in time` : outcome.message, "api_error");
+  }
+  // Past the first token the per-request timeout no longer applies: a long
+  // answer that is actively streaming must not be cut off.
+  clearTimeout(timeout);
+
+  built.done
+    .then((result) => {
+      if (result.errorMessage) {
+        logError(pending, start, 200, result.errorMessage, result.fullText);
+      } else {
+        logOk(pending, start, 200, result.fullText, result.usage);
+      }
+    })
+    .catch((err) => {
+      console.error("[routes/v1] pi-ai streaming done handler failed:", err);
+    });
+
+  c.header("Content-Type", "text/event-stream");
+  c.header("Cache-Control", "no-cache");
+  c.header("Connection", "keep-alive");
+  return c.newResponse(built.stream);
+}
+
 v1Router.post("/chat/completions", async (c) => {
   const start = Date.now();
   const apiKey = getApiKey(c);
@@ -409,6 +527,10 @@ v1Router.post("/chat/completions", async (c) => {
 
   const explicitVariant =
     typeof body.reasoning_effort === "string" && body.reasoning_effort.length > 0 ? body.reasoning_effort : undefined;
+
+  if (isPiModelId(body.model)) {
+    return handlePiChatCompletion(c, body, pending, start, explicitVariant, apiKey.allowedModels);
+  }
 
   const resolution = await resolveRequestedModel(body.model, explicitVariant, apiKey.allowedModels);
   if (!resolution.ok) {
@@ -642,6 +764,11 @@ v1Router.get("/models", async (c) => {
       ? listAliases().filter((a) => apiKey.allowedModels!.includes(a.alias))
       : listAliases();
 
+    const allPiModels = await listPiModels().catch(() => []);
+    const piModels = apiKey.allowedModels
+      ? allPiModels.filter((m) => apiKey.allowedModels!.includes(m.id))
+      : allPiModels;
+
     const response: ModelListResponse = {
       object: "list",
       data: [
@@ -657,6 +784,13 @@ v1Router.get("/models", async (c) => {
           object: "model" as const,
           created: 0,
           owned_by: "opencode",
+        })),
+        ...piModels.map((m) => ({
+          id: m.id,
+          object: "model" as const,
+          created: 0,
+          owned_by: "pi-ai",
+          ...(m.variants.length > 0 ? { variants: m.variants } : {}),
         })),
       ],
     };
