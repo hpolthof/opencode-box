@@ -35,7 +35,9 @@ export function parseModelId(model: string): { providerID: string; modelID: stri
   const variant = hashIdx >= 0 ? model.slice(hashIdx + 1) : undefined;
   const base = hashIdx >= 0 ? model.slice(0, hashIdx) : model;
 
-  const idx = base.indexOf("/");
+  // "pi/<provider>/<model>" (pi-ai backend) keeps "pi/<provider>" together
+  // as the provider, so the split happens on the second "/".
+  const idx = base.startsWith("pi/") ? base.indexOf("/", 3) : base.indexOf("/");
   if (idx <= 0 || idx === base.length - 1 || variant === "") {
     throw new InvalidModelError(model);
   }

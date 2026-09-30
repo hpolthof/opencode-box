@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { totals, usageByModel, usageByApp, type ModelUsage } from "../../db/requests";
-import { listModels } from "../../opencode/client";
-import { listPiModelRates } from "../../piai/models";
+import { listCatalogModels } from "../../catalog";
 import { estimateCost, resolveModelRate } from "../../pricing";
 import { Dashboard } from "../../views/dashboard";
 
@@ -16,7 +15,7 @@ dashboardRouter.get("/", async (c) => {
 
   // Best-effort: if OpenCode isn't reachable, usage still renders - it just
   // shows no cost data, same as everywhere else pricing is optional.
-  const catalog = [...(await listModels().catch(() => [])), ...(await listPiModelRates().catch(() => []))];
+  const catalog = await listCatalogModels().catch(() => []);
   const rateByModel = new Map(catalog.map((m) => [m.id, resolveModelRate(m.cost, m.id)]));
   const withCost = (rows: ModelUsage[]) =>
     rows.map((row) => {

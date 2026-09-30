@@ -2,6 +2,7 @@ import { createModels, getSupportedThinkingLevels, type Api, type CredentialStor
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-copilot";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { OPENAI_CODEX_MODELS } from "@earendil-works/pi-ai/providers/openai-codex.models";
 import { SqliteCredentialStore } from "../db/piCredentials";
 
 /**
@@ -59,9 +60,26 @@ function summarize(model: Model<Api>): PiModelSummary {
   };
 }
 
+/**
+ * With "Sign in with ChatGPT" the OpenAI provider only serves the models a
+ * ChatGPT subscription includes - others fail with "model is not supported
+ * when using Codex with a ChatGPT account". pi-ai's openai catalog doesn't
+ * filter for that, but its (legacy) openai-codex catalog is exactly that
+ * subscription set, so it's used as the allow-list while OpenAI's auth is
+ * OAuth. With an API key every OpenAI model stays available.
+ */
+const CHATGPT_SUBSCRIPTION_MODEL_IDS = new Set<string>(Object.values(OPENAI_CODEX_MODELS).map((m) => m.id));
+
+async function withoutUnsupportedSubscriptionModels(models: readonly Model<Api>[]): Promise<Model<Api>[]> {
+  if (!models.some((m) => m.provider === "openai")) return [...models];
+  const auth = await getPiModels().checkAuth("openai").catch(() => undefined);
+  if (auth?.type !== "oauth") return [...models];
+  return models.filter((m) => m.provider !== "openai" || CHATGPT_SUBSCRIPTION_MODEL_IDS.has(m.id));
+}
+
 /** Models whose provider has credentials configured. */
 export async function listPiModels(): Promise<PiModelSummary[]> {
-  const available = await getPiModels().getAvailable();
+  const available = await withoutUnsupportedSubscriptionModels(await getPiModels().getAvailable());
   return available.map(summarize);
 }
 
@@ -78,7 +96,7 @@ export async function findPiModel(id: string): Promise<PiModelSummary | null> {
   const modelId = rest.slice(slash + 1);
   let available: readonly Model<Api>[];
   try {
-    available = await getPiModels().getAvailable(providerId);
+    available = await withoutUnsupportedSubscriptionModels(await getPiModels().getAvailable(providerId));
   } catch {
     return null;
   }
@@ -86,23 +104,6 @@ export async function findPiModel(id: string): Promise<PiModelSummary | null> {
   return model ? summarize(model) : null;
 }
 
-/**
- * Pi models in the shape the admin pricing code expects from
- * `opencode/client.listModels()` ($/1M tokens), so request-log and
- * dashboard cost columns work for "pi/..." rows too.
- */
-export async function listPiModelRates(): Promise<
-  { id: string; cost: { input: number; output: number; cache: { read: number; write: number } } }[]
-> {
-  return (await listPiModels()).map(({ id, model }) => ({
-    id,
-    cost: {
-      input: model.cost.input,
-      output: model.cost.output,
-      cache: { read: model.cost.cacheRead, write: model.cost.cacheWrite },
-    },
-  }));
-}
 
 export interface PiProviderStatus {
   id: string;

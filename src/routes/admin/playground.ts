@@ -1,6 +1,10 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { insertRequestLog } from "../../db/requests";
-import { createSession, deleteSession, listModels, NO_TOOLS, sendMessage, sendPromptAsync, subscribeEvents } from "../../opencode/client";
+import { isPiProviderId, listCatalogModels } from "../../catalog";
+import { createSession, deleteSession, NO_TOOLS, sendMessage, sendPromptAsync, subscribeEvents } from "../../opencode/client";
+import type { ChatMessage, ResponseFormat } from "../../openai/types";
+import { assistantText, piUsageToTokenUsage } from "../../piai/chat";
+import { piComplete, piOpenStream } from "../../piai/run";
 import { buildOpenCodeFormat, extractErrorMessage, extractText, parseModelId } from "../../openai/translate";
 import { isMessagePartUpdated, isMessageUpdated, isTextPart } from "../../opencode/types";
 import { toTokenUsage, type TokenUsage } from "../../openai/usage";
@@ -10,7 +14,7 @@ export const playgroundRouter = new Hono();
 
 playgroundRouter.get("/playground", async (c) => {
   try {
-    const models = await listModels();
+    const models = await listCatalogModels();
     return c.html(Playground({ models }) as string);
   } catch {
     return c.html(Playground({ unreachable: true }) as string);
@@ -86,6 +90,7 @@ playgroundRouter.post("/playground/run", async (c) => {
   const stream = body.stream === true;
 
   let format: ReturnType<typeof buildOpenCodeFormat>;
+  let piResponseFormat: ResponseFormat | undefined;
   if (body.responseFormat !== undefined && body.responseFormat !== null) {
     const rf = body.responseFormat as { type?: unknown; schema?: unknown };
     if (rf.type === "json_schema") {
@@ -93,6 +98,7 @@ playgroundRouter.post("/playground/run", async (c) => {
         return c.json({ error: "`responseFormat.schema` must be an object when type is \"json_schema\"" }, 400);
       }
       format = buildOpenCodeFormat({ type: "json_schema", json_schema: { schema: rf.schema } });
+      piResponseFormat = { type: "json_schema", json_schema: { schema: rf.schema } };
     } else if (rf.type !== "text" && rf.type !== undefined) {
       return c.json({ error: '`responseFormat.type` must be "json_schema" or "text"' }, 400);
     }
@@ -109,7 +115,7 @@ playgroundRouter.post("/playground/run", async (c) => {
 
   const requestedId = `${providerID}/${modelID}`;
   try {
-    const available = await listModels();
+    const available = await listCatalogModels();
     const matched = available.find((m) => m.id === requestedId);
     if (!matched) {
       return c.json({ error: `Model "${requestedId}" is not available on this gateway` }, 404);
@@ -121,7 +127,11 @@ playgroundRouter.post("/playground/run", async (c) => {
       );
     }
   } catch {
-    return c.json({ error: "Failed to look up available models from OpenCode" }, 502);
+    return c.json({ error: "Failed to look up available models" }, 502);
+  }
+
+  if (isPiProviderId(providerID)) {
+    return runPi(c, { start, rawBody, modelString, providerID, modelID, variant, stream, system, prompt: body.prompt, responseFormat: piResponseFormat });
   }
 
   let sessionId: string;
@@ -273,3 +283,97 @@ playgroundRouter.post("/playground/run", async (c) => {
   c.header("Connection", "keep-alive");
   return c.newResponse(readable);
 });
+
+// --- pi-ai models ("pi/<provider>/<model>") -------------------------------
+
+const PI_PLAYGROUND_TIMEOUT_MS = 120_000;
+
+/** JSON-schema answers come back as text; parse them into `structured` like OpenCode's. */
+function parseStructured(content: string, responseFormat: ResponseFormat | undefined): unknown {
+  if (responseFormat?.type !== "json_schema") return null;
+  try {
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+async function runPi(
+  c: Context,
+  run: {
+    start: number;
+    rawBody: string;
+    modelString: string;
+    providerID: string;
+    modelID: string;
+    variant: string | undefined;
+    stream: boolean;
+    system: string | undefined;
+    prompt: string;
+    responseFormat: ResponseFormat | undefined;
+  }
+) {
+  const { start, rawBody, modelString, variant, stream } = run;
+  const target = { providerID: run.providerID, modelID: run.modelID, variant };
+  const messages: ChatMessage[] = [
+    ...(run.system ? [{ role: "system" as const, content: run.system }] : []),
+    { role: "user", content: run.prompt },
+  ];
+  const request = { messages, responseFormat: run.responseFormat };
+
+  if (!stream) {
+    const result = await piComplete(target, request, PI_PLAYGROUND_TIMEOUT_MS);
+    if (!result.ok) {
+      logRun(start, modelString, variant ?? null, false, rawBody, { status: "error", httpStatus: 502, errorMessage: result.message });
+      return c.json({ error: result.message }, 502);
+    }
+    const content = assistantText(result.message);
+    const usage = piUsageToTokenUsage(result.message.usage);
+    const responsePayload = { content, structured: parseStructured(content, run.responseFormat), usage, latencyMs: Date.now() - start };
+    logRun(start, modelString, variant ?? null, false, rawBody, { status: "ok", httpStatus: 200, responseBody: JSON.stringify(responsePayload), usage });
+    return c.json(responsePayload, 200);
+  }
+
+  const opened = await piOpenStream(target, request);
+  if (!opened.ok) {
+    logRun(start, modelString, variant ?? null, true, rawBody, { status: "error", httpStatus: 502, errorMessage: opened.message });
+    return c.json({ error: opened.message }, 502);
+  }
+  const encoder = new TextEncoder();
+  const readable = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let fullText = "";
+      const send = (payload: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+      const fail = (message: string) => {
+        send({ type: "error", message });
+        controller.close();
+        logRun(start, modelString, variant ?? null, true, rawBody, { status: "error", httpStatus: 200, errorMessage: message, responseBody: fullText || null });
+      };
+      try {
+        for await (const event of opened.events) {
+          if (event.type === "text_delta") {
+            fullText += event.delta;
+            send({ type: "delta", text: event.delta });
+          } else if (event.type === "done") {
+            const usage = piUsageToTokenUsage(event.message.usage);
+            const donePayload = { type: "done", content: fullText, structured: parseStructured(fullText, run.responseFormat), usage, latencyMs: Date.now() - start };
+            send(donePayload);
+            controller.close();
+            logRun(start, modelString, variant ?? null, true, rawBody, { status: "ok", httpStatus: 200, responseBody: JSON.stringify(donePayload), usage });
+            return;
+          } else if (event.type === "error") {
+            return fail(event.error.errorMessage ?? `Request ${event.reason}`);
+          }
+        }
+        fail("Stream ended without a result");
+      } catch (err) {
+        fail(err instanceof Error ? err.message : String(err));
+      }
+    },
+  });
+
+  c.header("Content-Type", "text/event-stream");
+  c.header("Cache-Control", "no-cache");
+  c.header("Connection", "keep-alive");
+  return c.newResponse(readable);
+}

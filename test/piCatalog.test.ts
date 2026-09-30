@@ -1,0 +1,176 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createModels, createProvider, fauxAssistantMessage, fauxProvider, fauxText, type Model } from "@earendil-works/pi-ai";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { Hono } from "hono";
+import { listCatalogModels } from "../src/catalog";
+import { createAlias } from "../src/db/modelAliases";
+import { parseModelId } from "../src/openai/translate";
+import type { ChatCompletionResponse, OpenAIErrorBody } from "../src/openai/types";
+import { setPiModelsForTesting } from "../src/piai/models";
+import { adminRouter } from "../src/routes/admin/index";
+import { v1Router } from "../src/routes/v1";
+
+// These tests assume no OpenCode server is reachable (like the other smoke
+// tests): the catalog then consists of the pi-ai models alone.
+
+const app = new Hono().route("/v1", v1Router).route("/admin", adminRouter);
+let authHeader: string;
+let adminCookie: string;
+
+const faux = fauxProvider({ provider: "faux", models: [{ id: "thinker", reasoning: true }] });
+
+// Available (has auth) but its endpoint refuses connections, so every
+// request to it fails - used as the first target of a failover alias.
+const brokenModel: Model<"openai-completions"> = {
+  id: "broken",
+  name: "broken",
+  api: "openai-completions",
+  provider: "broken",
+  baseUrl: "http://127.0.0.1:9/v1",
+  reasoning: true,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 1000,
+  maxTokens: 100,
+};
+
+let thinkerVariant: string;
+
+beforeAll(async () => {
+  const models = createModels();
+  models.setProvider(faux.provider);
+  models.setProvider(
+    createProvider({
+      id: "broken",
+      name: "broken",
+      baseUrl: brokenModel.baseUrl,
+      auth: { apiKey: { name: "broken", resolve: async () => ({ auth: { apiKey: "x" } }) } },
+      models: [brokenModel],
+      api: openAICompletionsApi(),
+    })
+  );
+  setPiModelsForTesting(models);
+
+  const { createKey } = await import("../src/db/apiKeys");
+  authHeader = `Bearer ${createKey("pi-catalog-test").rawKey}`;
+  const login = await app.request("/admin/login", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ password: process.env.ADMIN_PASSWORD ?? "" }).toString(),
+  });
+  adminCookie = login.headers.get("set-cookie")!.split(";")[0]!;
+
+  const thinker = (await listCatalogModels()).find((m) => m.id === "pi/faux/thinker")!;
+  thinkerVariant = thinker.variants![0]!;
+});
+
+afterAll(() => setPiModelsForTesting(null));
+
+function chat(body: object) {
+  return app.request("/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: authHeader },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("model catalog with pi-ai models", () => {
+  test("parseModelId keeps pi/<provider> together as the provider", () => {
+    expect(parseModelId("pi/openai/gpt-5#low")).toEqual({ providerID: "pi/openai", modelID: "gpt-5", variant: "low" });
+    expect(parseModelId("openai/gpt-5")).toEqual({ providerID: "openai", modelID: "gpt-5" });
+    expect(() => parseModelId("pi/openai")).toThrow();
+  });
+
+  test("pi models are listed even without a reachable OpenCode", async () => {
+    const models = await listCatalogModels();
+    const thinker = models.find((m) => m.id === "pi/faux/thinker");
+    expect(thinker).toMatchObject({ providerID: "pi/faux", modelID: "thinker", reasoning: true });
+    expect(thinker!.variants!.length).toBeGreaterThan(0);
+  });
+
+  test("GET /v1/models lists them, owned by pi-ai", async () => {
+    const res = await app.request("/v1/models", { headers: { Authorization: authHeader } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { id: string; owned_by: string }[] };
+    expect(body.data.find((m) => m.id === "pi/faux/thinker")?.owned_by).toBe("pi-ai");
+  });
+
+  test("admin Models, Keys, Aliases and Playground pages offer pi models", async () => {
+    for (const page of ["/admin/models", "/admin/keys", "/admin/aliases", "/admin/playground"]) {
+      const html = await (await app.request(page, { headers: { cookie: adminCookie } })).text();
+      expect(html).toContain("pi/faux/thinker");
+    }
+  });
+});
+
+describe("routing pi-ai targets", () => {
+  test("an alias whose first pi target fails falls over to the next one", async () => {
+    createAlias("pi-failover", "priority", [
+      { providerID: "pi/broken", modelID: "broken", variant: thinkerVariant },
+      { providerID: "pi/faux", modelID: "thinker", variant: thinkerVariant },
+    ]);
+    faux.setResponses([fauxAssistantMessage([fauxText("from the second target")])]);
+    const res = await chat({ model: "pi-failover", messages: [{ role: "user", content: "Hi" }] });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ChatCompletionResponse;
+    expect(body.model).toBe("pi-failover");
+    expect(body.choices[0].message.content).toBe("from the second target");
+  });
+
+  test("streaming through an alias", async () => {
+    createAlias("pi-stream", "priority", [{ providerID: "pi/faux", modelID: "thinker", variant: thinkerVariant }]);
+    faux.setResponses([fauxAssistantMessage([fauxText("gestreamd antwoord")])]);
+    const res = await chat({ model: "pi-stream", stream: true, messages: [{ role: "user", content: "Hi" }] });
+    expect(res.status).toBe(200);
+    const text = (await res.text())
+      .split("\n\n")
+      .filter((f) => f.startsWith("data: {"))
+      .map((f) => JSON.parse(f.slice(6)).choices[0]?.delta?.content ?? "")
+      .join("");
+    expect(text).toBe("gestreamd antwoord");
+  });
+
+  test("an alias whose only target fails -> 502 with the provider's error", async () => {
+    createAlias("pi-broken-only", "priority", [{ providerID: "pi/broken", modelID: "broken", variant: thinkerVariant }]);
+    const res = await chat({ model: "pi-broken-only", messages: [{ role: "user", content: "Hi" }] });
+    expect(res.status).toBe(502);
+  });
+
+  test("a reasoning level the pi model doesn't support -> 400", async () => {
+    const res = await chat({ model: "pi/faux/thinker#no-such-level", messages: [{ role: "user", content: "Hi" }] });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as OpenAIErrorBody).error.code).toBe("variant_not_found");
+  });
+
+  test("/v1/responses with a pi model -> 400 (not supported yet)", async () => {
+    const res = await app.request("/v1/responses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: authHeader },
+      body: JSON.stringify({ model: "pi/faux/thinker", input: "Hi" }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as OpenAIErrorBody).error.message).toContain("not supported on /v1/responses");
+  });
+
+  test("playground runs pi models, streaming and not", async () => {
+    const run = (stream: boolean) =>
+      app.request("/admin/playground/run", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: adminCookie },
+        body: JSON.stringify({ model: "pi/faux/thinker", prompt: "Hi", stream }),
+      });
+
+    faux.setResponses([fauxAssistantMessage([fauxText("playground ok")])]);
+    const res = await run(false);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { content: string }).content).toBe("playground ok");
+
+    faux.setResponses([fauxAssistantMessage([fauxText("playground stream")])]);
+    const frames = (await (await run(true)).text())
+      .split("\n\n")
+      .filter((f) => f.startsWith("data: "))
+      .map((f) => JSON.parse(f.slice(6)));
+    expect(frames.filter((f) => f.type === "delta").map((f) => f.text).join("")).toBe("playground stream");
+    expect(frames.at(-1)).toMatchObject({ type: "done", content: "playground stream" });
+  });
+});

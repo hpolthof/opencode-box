@@ -139,7 +139,11 @@ token by token.
 - `response_format: json_schema` is mapped to each API's native structured output (OpenAI
   `response_format` / `text.format`, Anthropic `output_config.format`).
 - `stream_options.include_usage` adds a final usage chunk.
-- Not yet: `/v1/responses`, model aliases/failover, tool calling.
+- pi models appear everywhere OpenCode models do: the Models, Keys (allowed models), Aliases and
+  Playground pages, and as alias targets (failover works across OpenCode and pi-ai targets).
+- With **Sign in with ChatGPT**, only the models a ChatGPT subscription includes are offered (others
+  are rejected by OpenAI); an `OPENAI_API_KEY` exposes the full OpenAI catalog.
+- Not yet: `/v1/responses`, tool calling.
 
 ## Data & persistence
 

@@ -1,14 +1,15 @@
 import { Hono } from "hono";
 import { createKey, listKeys, revokeKey, updateAllowedModels } from "../../db/apiKeys";
 import { listAliases } from "../../db/modelAliases";
-import { listModels, type ModelSummary } from "../../opencode/client";
+import { listCatalogModels } from "../../catalog";
+import type { ModelSummary } from "../../opencode/client";
 import { Keys } from "../../views/keys";
 
 export const keysRouter = new Hono();
 
 async function availableModels(): Promise<{ models: ModelSummary[]; modelsUnreachable: boolean }> {
   try {
-    return { models: await listModels(), modelsUnreachable: false };
+    return { models: await listCatalogModels(), modelsUnreachable: false };
   } catch {
     return { models: [], modelsUnreachable: true };
   }

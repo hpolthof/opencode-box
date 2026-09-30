@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { createAlias, deleteAlias, listAliases } from "../../db/modelAliases";
-import { listModels, type ModelSummary } from "../../opencode/client";
+import { listCatalogModels } from "../../catalog";
+import type { ModelSummary } from "../../opencode/client";
 import { Aliases } from "../../views/aliases";
 import type { ModelAliasMode, ModelAliasTarget } from "../../types";
 
@@ -9,7 +10,7 @@ export const aliasesRouter = new Hono();
 /** Only models with at least one configured reasoning variant make sense as an alias target. */
 async function pickableModels(): Promise<{ models: ModelSummary[]; modelsUnreachable: boolean }> {
   try {
-    const all = await listModels();
+    const all = await listCatalogModels();
     return { models: all.filter((m) => m.variants && m.variants.length > 0), modelsUnreachable: false };
   } catch {
     return { models: [], modelsUnreachable: true };
