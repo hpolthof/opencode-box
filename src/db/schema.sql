@@ -66,3 +66,12 @@ CREATE TABLE IF NOT EXISTS model_alias_targets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_model_alias_targets_alias_id ON model_alias_targets(alias_id);
+
+-- Credentials for the experimental pi-ai backend (src/piai): OAuth tokens
+-- from a dashboard login, stored as pi-ai's own `Credential` JSON. Access
+-- tokens are refreshed (and rewritten here) by pi-ai as they expire.
+CREATE TABLE IF NOT EXISTS pi_credentials (
+  provider_id TEXT PRIMARY KEY,
+  credential  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

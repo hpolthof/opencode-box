@@ -1,6 +1,8 @@
-import { createModels, getSupportedThinkingLevels, type Api, type Model, type MutableModels } from "@earendil-works/pi-ai";
+import { createModels, getSupportedThinkingLevels, type Api, type CredentialStore, type Model, type MutableModels } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-copilot";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { SqliteCredentialStore } from "../db/piCredentials";
 
 /**
  * Proof of concept: calls models directly through pi-ai (in-process, no
@@ -12,24 +14,29 @@ import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 export const PIAI_MODEL_PREFIX = "pi/";
 
 let models: MutableModels | null = null;
+let credentialStore: CredentialStore | null = null;
 
 /**
- * Anthropic and OpenAI only for now. Auth resolves from the standard env
- * vars (ANTHROPIC_API_KEY, OPENAI_API_KEY) - a provider without one is
- * simply "unavailable", which `listPiModels` filters out.
+ * Anthropic, OpenAI and GitHub Copilot for now. Credentials resolve from a
+ * dashboard OAuth login (stored in SQLite, see Admin > Providers) first,
+ * then from the standard env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY). A
+ * provider with neither is "unavailable", which `listPiModels` filters out.
  */
 export function getPiModels(): MutableModels {
   if (!models) {
-    models = createModels();
+    credentialStore = new SqliteCredentialStore();
+    models = createModels({ credentials: credentialStore });
     models.setProvider(anthropicProvider());
     models.setProvider(openaiProvider());
+    models.setProvider(githubCopilotProvider());
   }
   return models;
 }
 
 /** Test hook: swap in a Models collection wired to fake providers. */
-export function setPiModelsForTesting(replacement: MutableModels | null): void {
+export function setPiModelsForTesting(replacement: MutableModels | null, credentials: CredentialStore | null = null): void {
   models = replacement;
+  credentialStore = credentials;
 }
 
 export function isPiModelId(model: string): boolean {
@@ -95,4 +102,35 @@ export async function listPiModelRates(): Promise<
       cache: { read: model.cost.cacheRead, write: model.cost.cacheWrite },
     },
   }));
+}
+
+export interface PiProviderStatus {
+  id: string;
+  name: string;
+  /** Label of the provider's OAuth login (e.g. "Anthropic (Claude Pro/Max)"), if it has one. */
+  oauthLabel: string | null;
+  /** Where auth currently comes from, e.g. "oauth" or an env var name; null when unconfigured. */
+  authSource: string | null;
+  authType: "api_key" | "oauth" | null;
+  /** True when a credential is stored in the database (i.e. something to sign out of). */
+  hasStoredCredential: boolean;
+}
+
+export async function listPiProviders(): Promise<PiProviderStatus[]> {
+  const piModels = getPiModels();
+  const stored = new Set((await credentialStore?.list())?.map((c) => c.providerId) ?? []);
+  return Promise.all(
+    piModels.getProviders().map(async (provider) => {
+      const check = await piModels.checkAuth(provider.id).catch(() => undefined);
+      const oauth = provider.auth.oauth;
+      return {
+        id: provider.id,
+        name: provider.name,
+        oauthLabel: oauth ? oauth.loginLabel ?? oauth.name : null,
+        authSource: check ? check.source ?? check.type : null,
+        authType: check?.type ?? null,
+        hasStoredCredential: stored.has(provider.id),
+      };
+    })
+  );
 }

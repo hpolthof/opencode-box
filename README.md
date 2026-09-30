@@ -128,15 +128,18 @@ path, no agent system prompt is added (only your own system messages go upstream
 history is sent as real turns instead of one flattened transcript, and streaming is passed through
 token by token.
 
-- Providers: Anthropic and OpenAI, authenticated with `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in
-  the gateway's own environment. Models show up in `GET /v1/models` (owned by `pi-ai`) once their
-  key is set.
+- Providers: Anthropic, OpenAI and GitHub Copilot. Sign in from **Admin > Providers** (Claude
+  Pro/Max, ChatGPT or Copilot subscription via OAuth - the sign-in page walks through the auth URL
+  or device code and takes the pasted redirect URL), or set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
+  in the gateway's own environment. A dashboard sign-in wins over an env key. OAuth credentials are
+  stored in the gateway's SQLite database (`pi_credentials`) and refreshed automatically. Models show
+  up in `GET /v1/models` (owned by `pi-ai`) once their provider has credentials.
 - `reasoning_effort` (or a `#level` suffix) takes pi-ai's levels: `minimal`, `low`, `medium`,
   `high`, `xhigh`, `max`, as far as the model supports them.
 - `response_format: json_schema` is mapped to each API's native structured output (OpenAI
   `response_format` / `text.format`, Anthropic `output_config.format`).
 - `stream_options.include_usage` adds a final usage chunk.
-- Not yet: `/v1/responses`, model aliases/failover, OAuth logins, tool calling.
+- Not yet: `/v1/responses`, model aliases/failover, tool calling.
 
 ## Data & persistence
 
