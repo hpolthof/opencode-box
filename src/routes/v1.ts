@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { apiKeyAuth, getApiKey, type ApiKeyAuthEnv } from "../auth/apiKeyAuth";
 import { listCatalogModels, type ModelSummary } from "../catalog";
 import { findAliasByName, listAliases } from "../db/modelAliases";
@@ -10,7 +11,8 @@ import { InvalidModelError, parseModelId } from "../openai/translate";
 import { openAIError, type ChatCompletionRequest, type ModelListResponse } from "../openai/types";
 import type { TokenUsage } from "../openai/usage";
 import { createPiChatStream, piMessageToOpenAIResponse, piUsageToTokenUsage, type FirstOutcome, type StreamDoneResult } from "../piai/chat";
-import { piComplete, piStartStream, type PiRunRequest } from "../piai/run";
+import { gatewayError } from "../piai/errors";
+import { piComplete, piStartStream, type PiRunRequest, type TargetError } from "../piai/run";
 import { defaultReasoningVariant, normalizeReasoningVariant } from "../reasoning";
 import type { RequestLogEntry } from "../types";
 import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai";
@@ -225,20 +227,23 @@ const FAILOVER_TIMEOUT_MS = 120_000;
 
 /**
  * Tries each target in order for a non-streaming request, moving on to the
- * next on any failure (provider error, unavailable model, timeout).
- * Returns the first success, or the last failure's message.
+ * next on a failure another target might not have (provider 5xx/429/auth,
+ * unavailable model, network error, timeout). Stops at a failure that marks
+ * the request itself as invalid (`failover: false`, e.g. a provider 400).
+ * Returns the first success, or the last failure.
  */
 async function completeWithFailover(
   targets: ResolvedTarget[],
   request: PiRunRequest
-): Promise<{ ok: true; target: ResolvedTarget; message: AssistantMessage } | { ok: false; message: string }> {
-  let lastMessage = "No target model available";
+): Promise<{ ok: true; target: ResolvedTarget; message: AssistantMessage } | { ok: false; error: TargetError }> {
+  let lastError = gatewayError("No target model available");
   for (const target of targets) {
     const attempt = await piComplete(target, request, FAILOVER_TIMEOUT_MS);
     if (attempt.ok) return { ok: true, target, message: attempt.message };
-    lastMessage = attempt.message;
+    lastError = attempt.error;
+    if (!lastError.failover) break;
   }
-  return { ok: false, message: lastMessage };
+  return { ok: false, error: lastError };
 }
 
 /**
@@ -251,14 +256,21 @@ async function streamWithFailover<TStream extends { firstOutcome: Promise<FirstO
   targets: ResolvedTarget[],
   request: PiRunRequest,
   build: (events: AsyncIterable<AssistantMessageEvent>) => TStream
-): Promise<{ ok: true; target: ResolvedTarget; built: TStream } | { ok: false; message: string }> {
-  let lastMessage = "No target model available";
+): Promise<{ ok: true; target: ResolvedTarget; built: TStream } | { ok: false; error: TargetError }> {
+  let lastError = gatewayError("No target model available");
   for (const target of targets) {
     const attempt = await piStartStream(target, request, build, FAILOVER_TIMEOUT_MS);
     if (attempt.ok) return { ok: true, target, built: attempt.built };
-    lastMessage = attempt.message;
+    lastError = attempt.error;
+    if (!lastError.failover) break;
   }
-  return { ok: false, message: lastMessage };
+  return { ok: false, error: lastError };
+}
+
+/** Logs and answers a request whose every attempted target failed, with the (last) target's classified error. */
+function targetErrorResponse(c: Context<ApiKeyAuthEnv>, pending: PendingLog, start: number, rawBody: string, error: TargetError): Response {
+  logError(pending, start, error.status, error.message, rawBody);
+  return c.json(openAIError(error.message, error.type, error.code, error.param), error.status as ContentfulStatusCode);
 }
 
 type JsonBody<T> = { ok: true; rawBody: string; body: T } | { ok: false; response: Response };
@@ -357,10 +369,7 @@ v1Router.post("/chat/completions", async (c) => {
 
   if (!body.stream) {
     const result = await completeWithFailover(resolution.targets, request);
-    if (!result.ok) {
-      logError(pending, start, 502, result.message, rawBody);
-      return c.json(openAIError(result.message, "api_error"), 502);
-    }
+    if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
     commitTarget(pending, result.target);
     const response = piMessageToOpenAIResponse(body.model, result.message);
     logOk(pending, start, 200, JSON.stringify(response), piUsageToTokenUsage(result.message.usage));
@@ -371,10 +380,7 @@ v1Router.post("/chat/completions", async (c) => {
   const result = await streamWithFailover(resolution.targets, request, (events) =>
     createPiChatStream(events, body.model, { includeUsage })
   );
-  if (!result.ok) {
-    logError(pending, start, 502, result.message, rawBody);
-    return c.json(openAIError(result.message, "api_error"), 502);
-  }
+  if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
   commitTarget(pending, result.target);
   logWhenDone(pending, start, result.built.done);
   return sseResponse(c, result.built.stream);
@@ -435,10 +441,7 @@ v1Router.post("/responses", async (c) => {
 
   if (!body.stream) {
     const result = await completeWithFailover(resolution.targets, request);
-    if (!result.ok) {
-      logError(pending, start, 502, result.message, rawBody);
-      return c.json(openAIError(result.message, "api_error"), 502);
-    }
+    if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
     commitTarget(pending, result.target);
     const response = piMessageToResponseObject({ id: responseId, model: body.model, instructions, message: result.message });
     logOk(pending, start, 200, JSON.stringify(response), piUsageToTokenUsage(result.message.usage));
@@ -448,10 +451,7 @@ v1Router.post("/responses", async (c) => {
   const result = await streamWithFailover(resolution.targets, request, (events) =>
     createResponsesStream(events, responseId, body.model, instructions)
   );
-  if (!result.ok) {
-    logError(pending, start, 502, result.message, rawBody);
-    return c.json(openAIError(result.message, "api_error"), 502);
-  }
+  if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
   commitTarget(pending, result.target);
   logWhenDone(pending, start, result.built.done);
   return sseResponse(c, result.built.stream);

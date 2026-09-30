@@ -92,11 +92,12 @@ export interface OpenAIErrorBody {
     message: string;
     type: string;
     code?: string;
+    param?: string;
   };
 }
 
-export function openAIError(message: string, type: string, code?: string): OpenAIErrorBody {
-  return { error: { message, type, ...(code ? { code } : {}) } };
+export function openAIError(message: string, type: string, code?: string, param?: string): OpenAIErrorBody {
+  return { error: { message, type, ...(code ? { code } : {}), ...(param ? { param } : {}) } };
 }
 
 export interface ModelListEntry {
