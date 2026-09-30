@@ -28,6 +28,7 @@ import type { ModelSummary, OpenCodeEvent, SessionPromptResponse } from "../open
 import type { RequestLogEntry } from "../types";
 import { toTokenUsage, type TokenUsage } from "../openai/usage";
 import { isPiProviderId, listCatalogModels } from "../catalog";
+import { defaultReasoningVariant, normalizeReasoningVariant } from "../reasoning";
 import { piMessageToOpenAIResponse, piUsageToTokenUsage } from "../piai/chat";
 import { piComplete, piStartStream } from "../piai/run";
 
@@ -180,7 +181,7 @@ async function resolveRequestedModel(
     const message = err instanceof InvalidModelError ? err.message : "Invalid model id";
     return { ok: false, status: 400, message, type: "invalid_request_error" };
   }
-  const variant = explicitVariant ?? variantFromModel;
+  const requestedVariant = explicitVariant ?? variantFromModel;
   const requestedId = `${providerID}/${modelID}`;
 
   try {
@@ -204,6 +205,15 @@ async function resolveRequestedModel(
         code: "model_not_allowed",
       };
     }
+    // No level requested -> as little reasoning as the model allows (see
+    // defaultReasoningVariant). "none"/"off" on a model without any
+    // reasoning levels is trivially satisfied, so it's dropped.
+    let variant = normalizeReasoningVariant(requestedVariant, matched.variants);
+    if (variant === undefined) {
+      variant = defaultReasoningVariant(matched.variants);
+    } else if ((variant === "none" || variant === "off") && !matched.variants?.length) {
+      variant = undefined;
+    }
     // OpenCode models without a variant list accept any variant; pi-ai
     // models always know their supported reasoning levels.
     const knownVariants = matched.variants ?? (isPiProviderId(providerID) ? [] : null);
@@ -211,7 +221,7 @@ async function resolveRequestedModel(
       return {
         ok: false,
         status: 400,
-        message: `Variant "${variant}" is not available for model "${requestedId}". Available variants: ${knownVariants.join(", ") || "none"}`,
+        message: `Variant "${variant}" is not available for model "${requestedId}". Available variants: ${knownVariants.join(", ") || "(this model has no reasoning levels)"}`,
         type: "invalid_request_error",
         code: "variant_not_found",
       };
@@ -421,6 +431,9 @@ v1Router.post("/chat/completions", async (c) => {
     logError(pending, start, resolution.status, resolution.message, rawBody);
     return c.json(openAIError(resolution.message, resolution.type, resolution.code), resolution.status);
   }
+  // A plain model resolves to one target whose (possibly defaulted)
+  // reasoning level is known up front - log it even if the call fails.
+  if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
   const { system, text } = messagesToOpenCodePrompt(body.messages);
   const format = buildOpenCodeFormat(body.response_format);
   const buildBody = (): Omit<SendMessageBody, "model" | "variant"> => ({
@@ -603,6 +616,9 @@ v1Router.post("/responses", async (c) => {
     logError(pending, start, resolution.status, resolution.message, rawBody);
     return c.json(openAIError(resolution.message, resolution.type, resolution.code), resolution.status);
   }
+  // A plain model resolves to one target whose (possibly defaulted)
+  // reasoning level is known up front - log it even if the call fails.
+  if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
   // The pi-ai backend only serves /chat/completions so far.
   const targets = resolution.targets.filter((t) => !isPiProviderId(t.providerID));
   if (targets.length === 0) {

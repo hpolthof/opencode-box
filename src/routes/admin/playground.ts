@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { insertRequestLog } from "../../db/requests";
 import { isPiProviderId, listCatalogModels } from "../../catalog";
+import { defaultReasoningVariant, normalizeReasoningVariant } from "../../reasoning";
 import { createSession, deleteSession, NO_TOOLS, sendMessage, sendPromptAsync, subscribeEvents } from "../../opencode/client";
 import type { ChatMessage, ResponseFormat } from "../../openai/types";
 import { assistantText, piUsageToTokenUsage } from "../../piai/chat";
@@ -86,7 +87,8 @@ playgroundRouter.post("/playground/run", async (c) => {
   }
   const modelString = body.model;
   const system = typeof body.system === "string" && body.system.length > 0 ? body.system : undefined;
-  const variant = typeof body.variant === "string" && body.variant.length > 0 ? body.variant : undefined;
+  const requestedVariant = typeof body.variant === "string" && body.variant.length > 0 ? body.variant : undefined;
+  let variant: string | undefined;
   const stream = body.stream === true;
 
   let format: ReturnType<typeof buildOpenCodeFormat>;
@@ -120,6 +122,8 @@ playgroundRouter.post("/playground/run", async (c) => {
     if (!matched) {
       return c.json({ error: `Model "${requestedId}" is not available on this gateway` }, 404);
     }
+    // Same rule as /v1: no level chosen -> as little reasoning as the model allows.
+    variant = normalizeReasoningVariant(requestedVariant, matched.variants) ?? defaultReasoningVariant(matched.variants);
     if (variant && matched.variants && !matched.variants.includes(variant)) {
       return c.json(
         { error: `Variant "${variant}" is not available for model "${requestedId}". Available variants: ${matched.variants.join(", ")}` },

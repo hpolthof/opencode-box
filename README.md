@@ -134,8 +134,8 @@ token by token.
   in the gateway's own environment. A dashboard sign-in wins over an env key. OAuth credentials are
   stored in the gateway's SQLite database (`pi_credentials`) and refreshed automatically. Models show
   up in `GET /v1/models` (owned by `pi-ai`) once their provider has credentials.
-- `reasoning_effort` (or a `#level` suffix) takes pi-ai's levels: `minimal`, `low`, `medium`,
-  `high`, `xhigh`, `max`, as far as the model supports them.
+- `reasoning_effort` (or a `#level` suffix) takes pi-ai's levels: `none` (reasoning off; `off` works
+  too), `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, as far as the model supports them.
 - `response_format: json_schema` is mapped to each API's native structured output (OpenAI
   `response_format` / `text.format`, Anthropic `output_config.format`).
 - `stream_options.include_usage` adds a final usage chunk.
@@ -144,6 +144,15 @@ token by token.
 - With **Sign in with ChatGPT**, only the models a ChatGPT subscription includes are offered (others
   are rejected by OpenAI); an `OPENAI_API_KEY` exposes the full OpenAI catalog.
 - Not yet: `/v1/responses`, tool calling.
+
+## Reasoning level when none is given
+
+A request without `reasoning_effort` / `#variant` gets as little reasoning as the model allows, for
+OpenCode and pi-ai models alike (OpenCode's own default would be e.g. `medium` for GPT-5.x):
+reasoning off (`none`) where the model supports that, otherwise its lowest level (`minimal` or
+`low`). Models that only offer extra thinking budgets (`high`/`max`, e.g. Claude 4.5 or Gemini 2.5)
+get no variant, which is already their minimum. The level used is recorded in the request log, and
+the Playground's "Default" option shows it per model.
 
 ## Data & persistence
 

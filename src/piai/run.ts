@@ -1,7 +1,7 @@
 import type { AssistantMessage, AssistantMessageEvent, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { ChatMessage, ResponseFormat } from "../openai/types";
 import { createPiChatStream, messagesToPiContext, structuredOutputHook, UnsupportedResponseFormatError, type PiChatStream } from "./chat";
-import { findPiModel, getPiModels, type PiModelSummary } from "./models";
+import { findPiModel, getPiModels, PI_REASONING_OFF, type PiModelSummary } from "./models";
 
 /**
  * Runs one pi-ai target of a /v1 or playground request. Mirrors how an
@@ -47,7 +47,8 @@ async function prepare(target: PiTarget, request: PiRunRequest): Promise<Prepare
     abort,
     options: {
       signal: abort.signal,
-      ...(target.variant ? { reasoning: target.variant as ThinkingLevel } : {}),
+      // Leaving `reasoning` out is pi-ai's way of switching it off.
+      ...(target.variant && target.variant !== PI_REASONING_OFF ? { reasoning: target.variant as ThinkingLevel } : {}),
       ...(onPayload ? { onPayload } : {}),
     },
   };

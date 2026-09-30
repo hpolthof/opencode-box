@@ -1,6 +1,7 @@
 import type { FC } from "hono/jsx";
 import { Layout } from "./layout";
 import type { ModelSummary } from "../opencode/client";
+import { defaultReasoningVariant } from "../reasoning";
 
 interface PlaygroundProps {
   models?: ModelSummary[];
@@ -82,7 +83,8 @@ const SCRIPT = `
     variantSelect.innerHTML = "";
     var def = document.createElement("option");
     def.value = "";
-    def.textContent = "Default";
+    var defaultVariant = opt && opt.getAttribute("data-default-variant");
+    def.textContent = defaultVariant ? "Default (" + defaultVariant + ")" : "Default (lowest the model allows)";
     variantSelect.appendChild(def);
 
     if (!variants.length) {
@@ -342,6 +344,7 @@ export const Playground: FC<PlaygroundProps> = ({ models, unreachable }) => {
                       <option
                         value={model.id}
                         data-variants={JSON.stringify(model.variants ?? [])}
+                        data-default-variant={defaultReasoningVariant(model.variants) ?? ""}
                         data-reasoning={model.reasoning ? "true" : "false"}
                       >
                         {model.name ? `${model.name} (${model.id})` : model.id}

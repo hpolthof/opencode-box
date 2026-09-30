@@ -48,15 +48,24 @@ export interface PiModelSummary {
   /** Gateway-facing id, e.g. "pi/openai/gpt-5-mini". */
   id: string;
   model: Model<Api>;
-  /** Reasoning levels accepted as `reasoning_effort`, "off" excluded. */
+  /**
+   * Reasoning levels accepted as `reasoning_effort`. pi-ai's "off" is
+   * exposed as "none" (OpenAI's name for it, and OpenCode's variant id);
+   * models without reasoning have none at all.
+   */
   variants: string[];
 }
+
+/** Gateway name for pi-ai's "off" thinking level. */
+export const PI_REASONING_OFF = "none";
 
 function summarize(model: Model<Api>): PiModelSummary {
   return {
     id: `${PIAI_MODEL_PREFIX}${model.provider}/${model.id}`,
     model,
-    variants: getSupportedThinkingLevels(model).filter((level) => level !== "off"),
+    variants: model.reasoning
+      ? getSupportedThinkingLevels(model).map((level) => (level === "off" ? PI_REASONING_OFF : level))
+      : [],
   };
 }
 
