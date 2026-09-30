@@ -48,6 +48,11 @@ export function toResponseUsage(usage: TokenUsage): ResponseUsage {
   };
 }
 
+/**
+ * A finished response. `truncated` (the provider stopped on the output token
+ * cap) makes it `status: "incomplete"` with reason "max_output_tokens", as
+ * OpenAI does.
+ */
 export function completedResponseObject(args: {
   id: string;
   model: string;
@@ -55,24 +60,27 @@ export function completedResponseObject(args: {
   createdAt: number;
   text: string;
   usage: TokenUsage | null;
+  truncated?: boolean;
 }): ResponseObject {
+  const status = args.truncated ? "incomplete" : "completed";
   const item: ResponseOutputMessageItem = {
     id: `msg_${args.id.replace(/^resp_/, "")}`,
     type: "message",
     role: "assistant",
-    status: "completed",
+    status,
     content: [{ type: "output_text", text: args.text, annotations: [] } satisfies ResponseOutputTextPart],
   };
   return {
     id: args.id,
     object: "response",
     created_at: args.createdAt,
-    status: "completed",
+    status,
     model: args.model,
     output: [item],
     output_text: args.text,
     usage: args.usage ? toResponseUsage(args.usage) : null,
     error: null,
+    incomplete_details: args.truncated ? { reason: "max_output_tokens" } : null,
     instructions: args.instructions,
   };
 }
@@ -94,6 +102,7 @@ export function failedResponseObject(args: {
     output_text: "",
     usage: null,
     error: { code: "api_error", message: args.message },
+    incomplete_details: null,
     instructions: args.instructions,
   };
 }
@@ -112,5 +121,6 @@ export function piMessageToResponseObject(args: {
     createdAt: Math.floor(args.message.timestamp / 1000),
     text: assistantText(args.message),
     usage: piUsageToTokenUsage(args.message.usage),
+    truncated: args.message.stopReason === "length",
   });
 }

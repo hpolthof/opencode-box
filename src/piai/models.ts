@@ -74,10 +74,15 @@ function summarize(model: Model<Api>): PiModelSummary {
  */
 const CHATGPT_SUBSCRIPTION_MODEL_IDS = new Set<string>(Object.values(OPENAI_CODEX_MODELS).map((m) => m.id));
 
+/** True while the OpenAI provider is signed in with a ChatGPT account (OAuth) rather than an API key. */
+export async function isChatGPTSignIn(): Promise<boolean> {
+  const auth = await getPiModels().checkAuth("openai").catch(() => undefined);
+  return auth?.type === "oauth";
+}
+
 async function withoutUnsupportedSubscriptionModels(models: readonly Model<Api>[]): Promise<Model<Api>[]> {
   if (!models.some((m) => m.provider === "openai")) return [...models];
-  const auth = await getPiModels().checkAuth("openai").catch(() => undefined);
-  if (auth?.type !== "oauth") return [...models];
+  if (!(await isChatGPTSignIn())) return [...models];
   return models.filter((m) => m.provider !== "openai" || CHATGPT_SUBSCRIPTION_MODEL_IDS.has(m.id));
 }
 

@@ -17,6 +17,7 @@ export interface ResponsesStream {
  * `response.created` / `in_progress`, one output message item with one
  * `output_text` part, a `response.output_text.delta` per text chunk, the
  * matching `*.done` events and finally `response.completed` (or
+ * `response.incomplete` when the answer hit `max_output_tokens`, or
  * `response.failed`).
  *
  * Unlike Chat Completions streaming, the real Responses API does NOT end
@@ -66,6 +67,7 @@ export function createResponsesStream(
         output_text: "",
         usage: null,
         error: null,
+        incomplete_details: null,
         instructions,
       });
 
@@ -112,9 +114,10 @@ export function createResponsesStream(
             const finalPart: ResponseOutputTextPart = { type: "output_text", text: fullText, annotations: [] };
             send({ type: "response.output_text.done", item_id: itemId, output_index: 0, content_index: 0, text: fullText, sequence_number: sequenceNumber++ });
             send({ type: "response.content_part.done", item_id: itemId, output_index: 0, content_index: 0, part: finalPart, sequence_number: sequenceNumber++ });
-            const response = completedResponseObject({ id: responseId, model, instructions, createdAt, text: fullText, usage });
+            const truncated = event.message.stopReason === "length";
+            const response = completedResponseObject({ id: responseId, model, instructions, createdAt, text: fullText, usage, truncated });
             send({ type: "response.output_item.done", output_index: 0, item: response.output[0]!, sequence_number: sequenceNumber++ });
-            send({ type: "response.completed", response, sequence_number: sequenceNumber++ });
+            send({ type: truncated ? "response.incomplete" : "response.completed", response, sequence_number: sequenceNumber++ });
             controller.close();
             resolveDone({ fullText, usage });
             return;
