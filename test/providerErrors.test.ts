@@ -43,7 +43,7 @@ describe("classifyProviderError", () => {
       message: "No such model",
       type: "invalid_request_error",
       code: "model_not_found",
-      failover: false,
+      failover: true,
     });
     expect(
       classifyProviderError('413 {"type":"error","error":{"type":"request_too_large","message":"Request exceeds the maximum size"}}')
@@ -159,6 +159,8 @@ beforeAll(async () => {
           );
         case "down":
           return Response.json({ error: { message: "The server had an error", type: "server_error" } }, { status: 500 });
+        case "gone":
+          return Response.json({ error: { message: "The model `gone` does not exist", type: "invalid_request_error", code: "model_not_found" } }, { status: 404 });
         case "limited":
           return Response.json({ error: { message: "Rate limit reached", type: "requests", code: "rate_limit_exceeded" } }, { status: 429 });
         default:
@@ -169,7 +171,7 @@ beforeAll(async () => {
   const base = `http://127.0.0.1:${upstream.port}`;
 
   const models = createModels();
-  models.setProvider(fakeProvider("fake", "openai-completions", openAICompletionsApi(), `${base}/v1`, ["bad", "down", "limited", "good"]));
+  models.setProvider(fakeProvider("fake", "openai-completions", openAICompletionsApi(), `${base}/v1`, ["bad", "down", "gone", "limited", "good"]));
   models.setProvider(fakeProvider("fakeresp", "openai-responses", openAIResponsesApi(), `${base}/v1`, ["bad-responses"]));
   models.setProvider(fakeProvider("fakeanth", "anthropic-messages", anthropicMessagesApi(), base, ["bad-anthropic"]));
   // Available (has auth) but its endpoint refuses connections.
@@ -181,6 +183,7 @@ beforeAll(async () => {
   createAlias("err-down-first", "priority", [target("fake", "down"), target("fake", "good")]);
   createAlias("err-refused-first", "priority", [target("refused", "refused"), target("fake", "good")]);
   createAlias("err-limited-first", "priority", [target("fake", "limited"), target("fake", "good")]);
+  createAlias("err-gone-first", "priority", [target("fake", "gone"), target("fake", "good")]);
 });
 
 afterAll(() => {
@@ -247,9 +250,10 @@ describe("provider 4xx errors are passed through", () => {
 
 describe("failover still happens where another target may succeed", () => {
   for (const { path, stream, label } of cases) {
-    test(`${label}: 500, connection refused and 429 fall over to the second target`, async () => {
+    test(`${label}: 500, 404 (model not found), connection refused and 429 fall over to the second target`, async () => {
       for (const [alias, failing] of [
         ["err-down-first", "down"],
+        ["err-gone-first", "gone"],
         ["err-limited-first", "limited"],
         ["err-refused-first", null],
       ] as const) {

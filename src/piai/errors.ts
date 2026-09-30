@@ -11,10 +11,10 @@ import type { Api, ProviderResponse, StreamOptions } from "@earendil-works/pi-ai
  *   unrecognised failures - is a 502 `api_error` carrying the raw message.
  *
  * `failover` is false only when the next target would reject the very same
- * request (400, 404, 413, 422): trying it only adds latency. 429, 401/403
- * (another target may sit on a different, working provider), 5xx,
- * timeouts, network errors and per-target conditions like "model not
- * available" keep failing over.
+ * request (400, 413, 422): trying it only adds latency. 404 does fail over -
+ * providers use it for "model not found", a per-target condition - as do
+ * 429, 401/403 (another target may sit on a different, working provider),
+ * 5xx, timeouts, network errors and "model not available".
  */
 export interface TargetError {
   status: number;
@@ -37,7 +37,7 @@ const PASSTHROUGH_STATUS_TYPES: Record<number, string> = {
 };
 
 /** Statuses where the request itself is wrong, so another target would fail the same way. */
-const NO_FAILOVER_STATUSES = new Set([400, 404, 413, 422]);
+const NO_FAILOVER_STATUSES = new Set([400, 413, 422]);
 
 /** A gateway-side or upstream-availability failure: 502 `api_error`, worth failing over. */
 export function gatewayError(message: string): TargetError {
