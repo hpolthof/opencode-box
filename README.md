@@ -97,7 +97,9 @@ curl http://localhost:8080/v1/responses \
   model id: `none` (off; `off` works too), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` - as
   far as the model supports them (`GET /v1/models` lists them per model as `variants`). Without one,
   a request gets as little reasoning as the model allows: `none` where it can be switched off,
-  otherwise its lowest level. The level used is recorded in the request log.
+  otherwise its lowest level. An explicit `none`/`off` means the same on a model that can't switch
+  reasoning off; any other level the model doesn't offer is a 400. The level used is recorded in the
+  request log.
 - **Usage**: non-streaming responses carry `usage`; for streaming chat completions, send
   `stream_options: {"include_usage": true}` to get a final usage chunk.
 - **ChatGPT subscription**: with *Sign in with ChatGPT*, only the models the subscription includes
@@ -108,6 +110,14 @@ curl http://localhost:8080/v1/responses \
 An alias (Admin > Aliases) is a client-facing model name that maps to one or more
 `provider/model` + reasoning-level targets, tried in priority order or in a random order per request.
 A target that fails (provider error, unavailable, no first token within 120s) falls over to the next.
+
+By default the targets' pinned reasoning levels always apply: a client's `reasoning_effort` /
+`reasoning.effort` has **no effect** on an alias. Turn on *Client effort overrides the pinned level*
+for an alias to use the client's effort instead when it sends one. The effort then goes to every
+target: `none`/`off` becomes the least reasoning that target allows, and a level the target doesn't
+offer becomes the nearest one it does, preferring the next higher level (as pi-ai does), e.g.
+`minimal` -> `low`, `max` -> `xhigh`. A pinned `none` on a model that can't switch reasoning off
+runs at its lowest level.
 
 ## Admin dashboard
 

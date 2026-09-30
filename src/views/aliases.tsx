@@ -8,7 +8,7 @@ interface AliasesProps {
   models?: ModelSummary[];
   modelsUnreachable?: boolean;
   error?: string;
-  formValues?: { name: string; mode: ModelAliasMode; targets: { model: string; variant: string }[] };
+  formValues?: { name: string; mode: ModelAliasMode; clientEffortOverrides: boolean; targets: { model: string; variant: string }[] };
 }
 
 const ALIASES_SCRIPT = `
@@ -165,6 +165,17 @@ export const Aliases: FC<AliasesProps> = ({ aliases, models, modelsUnreachable, 
             + Add another model
           </button>
 
+          <div style="margin-bottom: 1rem;">
+            <label>
+              <input type="checkbox" name="clientEffortOverrides" value="1" checked={formValues?.clientEffortOverrides ?? false} />{" "}
+              Client effort overrides the pinned level{" "}
+              <span class="muted">
+                — a request's <code>reasoning_effort</code> / <code>reasoning.effort</code> is used instead, mapped to the nearest
+                level each target offers; otherwise the pinned levels always apply
+              </span>
+            </label>
+          </div>
+
           <div>
             <button type="submit">Create alias</button>
           </div>
@@ -198,7 +209,14 @@ export const Aliases: FC<AliasesProps> = ({ aliases, models, modelsUnreachable, 
             {aliases.map((alias) => (
               <tr>
                 <td class="mono">{alias.alias}</td>
-                <td>{alias.mode}</td>
+                <td>
+                  {alias.mode}
+                  {alias.clientEffortOverrides && (
+                    <div class="muted" title="A client's reasoning effort overrides the pinned levels">
+                      client effort overrides
+                    </div>
+                  )}
+                </td>
                 <td class="mono">
                   {alias.targets.map((t, i) => (
                     <div>
