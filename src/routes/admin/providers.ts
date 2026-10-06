@@ -5,11 +5,11 @@ import { getCustomProvider } from "../../db/customProviders";
 import { CustomProviderError, discoverModels, formatModelLines, parseCustomProviderInput, type CustomProviderInput } from "../../piai/customProviders";
 import { addCustomProvider, editCustomProvider, listPiProviders, removeCustomProvider, type PiProviderStatus } from "../../piai/models";
 import { ProviderLogin } from "../../views/providerLogin";
-import { Providers } from "../../views/providers";
+import { Providers, type CustomFormState } from "../../views/providers";
 
 export const providersRouter = new Hono();
 
-async function renderProviders(c: Context, flash?: { tone: "success" | "error"; message: string }, form?: Record<string, string>, status: 200 | 400 = 200) {
+async function renderProviders(c: Context, flash?: { tone: "success" | "error"; message: string }, form?: CustomFormState, status: 200 | 400 = 200) {
   let providers: PiProviderStatus[] = [];
   let loadError = false;
   try {
@@ -51,6 +51,10 @@ providersRouter.post("/providers/custom/fetch-models", async (c) => {
   }
 });
 
+function toFormState(mode: "add" | "edit", form: CustomProviderInput): CustomFormState {
+  return { mode, id: form.id, name: form.name, baseUrl: form.baseUrl, models: form.models };
+}
+
 /** Add a custom OpenAI-compatible endpoint. */
 providersRouter.post("/providers/custom", async (c) => {
   const form = await readCustomForm(c);
@@ -60,7 +64,7 @@ providersRouter.post("/providers/custom", async (c) => {
     return c.redirect(`/admin/providers?custom=${encodeURIComponent(record.id)}`, 302);
   } catch (err) {
     if (!(err instanceof CustomProviderError)) throw err;
-    return renderProviders(c, { tone: "error", message: err.message }, { ...form, apiKey: "" }, 400);
+    return renderProviders(c, { tone: "error", message: err.message }, toFormState("add", form), 400);
   }
 });
 
@@ -75,7 +79,7 @@ providersRouter.post("/providers/custom/:providerId/edit", async (c) => {
     return c.redirect(`/admin/providers?custom=${encodeURIComponent(id)}`, 302);
   } catch (err) {
     if (!(err instanceof CustomProviderError)) throw err;
-    return renderProviders(c, { tone: "error", message: err.message }, undefined, 400);
+    return renderProviders(c, { tone: "error", message: err.message }, toFormState("edit", { ...form, id }), 400);
   }
 });
 

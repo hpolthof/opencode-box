@@ -73,7 +73,7 @@ describe("custom OpenAI-compatible providers", () => {
       const call = (body: object) =>
         app.fetch(new Request("http://localhost/admin/providers/custom/fetch-models", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify(body) }));
       const ok = await call({ baseUrl: url, apiKey: "k" });
-      expect((await ok.json()).models).toBe("plain\nthinker | low,medium,high\ncustom-levels | low,xhigh");
+      expect(((await ok.json()) as { models: string }).models).toBe("plain\nthinker | low,medium,high\ncustom-levels | low,xhigh");
       expect((await call({ baseUrl: url, apiKey: "" })).status).toBe(502);
     } finally {
       server.stop(true);
