@@ -10,7 +10,7 @@
 // against fake providers.
 import { describe, expect, test } from "bun:test";
 import { Hono } from "hono";
-import { createAlias, deleteAlias, findAliasByName, listAliases } from "../src/db/modelAliases";
+import { createAlias, deleteAlias, findAliasByName, listAliases, updateAlias } from "../src/db/modelAliases";
 import { createKey } from "../src/db/apiKeys";
 import { adminRouter } from "../src/routes/admin/index";
 import { v1Router } from "../src/routes/v1";
@@ -43,6 +43,19 @@ describe("db/modelAliases", () => {
     expect(record.mode).toBe("random");
     expect(record.targets).toEqual(targets);
     expect(findAliasByName("alias-db-test-multi")!.targets).toEqual(targets);
+  });
+
+  test("updateAlias replaces name, mode, options and targets", () => {
+    const record = createAlias("alias-db-test-upd", "priority", [{ providerID: "openai", modelID: "a", variant: "low" }]);
+    const targets = [
+      { providerID: "openai", modelID: "b", variant: "high" },
+      { providerID: "anthropic", modelID: "c", variant: "medium" },
+    ];
+    expect(updateAlias(record.id, "alias-db-test-upd2", "random", targets, { clientEffortOverrides: true })).toBe(true);
+    expect(findAliasByName("alias-db-test-upd")).toBeNull();
+    expect(findAliasByName("alias-db-test-upd2")).toMatchObject({ id: record.id, mode: "random", clientEffortOverrides: true, targets });
+    expect(updateAlias(999999, "x", "priority", targets)).toBe(false);
+    expect(() => updateAlias(record.id, "alias-db-test-upd2", "priority", [])).toThrow();
   });
 
   test("creating with zero targets throws", () => {
@@ -90,6 +103,38 @@ describe("admin /admin/aliases (no provider configured)", () => {
     });
     expect(res.status).toBe(400);
     expect(findAliasByName("alias-unreachable")).toBeNull();
+  });
+});
+
+describe("admin alias editing (no provider configured)", () => {
+  async function edit(id: number, fields: Record<string, string>) {
+    const cookie = await loginCookie();
+    return adminApp.request(`/admin/aliases/${id}/edit`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(fields).toString(),
+      redirect: "manual",
+    });
+  }
+
+  test("an unchanged (currently unavailable) target is kept, so renaming works", async () => {
+    const record = createAlias("alias-edit-test", "priority", [{ providerID: "openai", modelID: "gpt-x", variant: "high" }]);
+    const res = await edit(record.id, { name: "alias-edit-renamed", mode: "random", targetModel: "openai/gpt-x", targetVariant: "high" });
+    expect(res.status).toBe(302);
+    expect(findAliasByName("alias-edit-renamed")).toMatchObject({ id: record.id, mode: "random", targets: record.targets });
+  });
+
+  test("a changed target that is not available is rejected and nothing changes", async () => {
+    const record = createAlias("alias-edit-test2", "priority", [{ providerID: "openai", modelID: "gpt-x", variant: "high" }]);
+    const res = await edit(record.id, { name: "alias-edit-test2", mode: "priority", targetModel: "openai/gpt-y", targetVariant: "high" });
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    expect(html).toContain("has reasoning variants available");
+    expect(findAliasByName("alias-edit-test2")!.targets[0]!.modelID).toBe("gpt-x");
+  });
+
+  test("editing an unknown alias is a 404", async () => {
+    expect((await edit(999999, { name: "x", targetModel: "a/b", targetVariant: "c" })).status).toBe(404);
   });
 });
 

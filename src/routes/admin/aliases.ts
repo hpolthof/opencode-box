@@ -1,9 +1,9 @@
-import { Hono } from "hono";
-import { createAlias, deleteAlias, listAliases } from "../../db/modelAliases";
+import { Hono, type Context } from "hono";
+import { createAlias, deleteAlias, listAliases, updateAlias } from "../../db/modelAliases";
 import { listCatalogModels } from "../../catalog";
 import type { ModelSummary } from "../../catalog";
-import { Aliases } from "../../views/aliases";
-import type { ModelAliasMode, ModelAliasTarget } from "../../types";
+import { Aliases, type AliasFormState } from "../../views/aliases";
+import type { ModelAliasMode, ModelAliasRecord, ModelAliasTarget } from "../../types";
 
 export const aliasesRouter = new Hono();
 
@@ -43,49 +43,71 @@ aliasesRouter.get("/aliases", async (c) => {
   return c.html(Aliases({ aliases: listAliases(), models, modelsUnreachable }) as string);
 });
 
-aliasesRouter.post("/aliases", async (c) => {
-  const body = await c.req.parseBody({ all: true });
-  const { models, modelsUnreachable } = await pickableModels();
-
-  const name = typeof body.name === "string" ? body.name.trim() : "";
-  const mode = parseMode(body.mode);
-  const targetRows = parseTargetRows(body);
-  // An unchecked checkbox isn't submitted at all.
-  const clientEffortOverrides = body.clientEffortOverrides !== undefined;
-
-  const rerender = (error: string) =>
-    c.html(
-      Aliases({
-        aliases: listAliases(),
-        models,
-        modelsUnreachable,
-        error,
-        formValues: { name, mode, clientEffortOverrides, targets: targetRows },
-      }) as string,
-      400
-    );
-
-  if (!name) return rerender("Name is required");
-  if (targetRows.length === 0) return rerender("Add at least one target model");
-
+/**
+ * Validates a submitted alias form against the pickable models. When editing,
+ * a target the alias already has stays valid even if its model is unavailable
+ * right now, so e.g. renaming an alias doesn't depend on every provider being up.
+ */
+function validateAliasForm(
+  form: AliasFormState,
+  models: ModelSummary[],
+  existing?: ModelAliasRecord
+): { error: string } | { targets: ModelAliasTarget[] } {
+  if (!form.name) return { error: "Name is required" };
+  if (form.targets.length === 0) return { error: "Add at least one target model" };
   const targets: ModelAliasTarget[] = [];
-  for (const row of targetRows) {
+  for (const row of form.targets) {
     const matched = models.find((m) => m.id === row.model);
-    if (!matched) return rerender(`Choose a model that has reasoning variants available (target ${targets.length + 1})`);
-    if (!row.variant || !matched.variants?.includes(row.variant)) {
-      return rerender(`Choose a valid variant for "${row.model}"`);
+    if (matched) {
+      if (!row.variant || !matched.variants?.includes(row.variant)) return { error: `Choose a valid variant for "${row.model}"` };
+      targets.push({ providerID: matched.providerID, modelID: matched.modelID, variant: row.variant });
+      continue;
     }
-    targets.push({ providerID: matched.providerID, modelID: matched.modelID, variant: row.variant });
+    const kept = existing?.targets.find((t) => `${t.providerID}/${t.modelID}` === row.model && t.variant === row.variant);
+    if (!kept) return { error: `Choose a model that has reasoning variants available (target ${targets.length + 1})` };
+    targets.push(kept);
   }
+  return { targets };
+}
 
+async function readAliasForm(c: Context, mode: "add" | "edit", id?: number): Promise<AliasFormState> {
+  const body = await c.req.parseBody({ all: true });
+  return {
+    mode: mode,
+    id,
+    name: typeof body.name === "string" ? body.name.trim() : "",
+    aliasMode: parseMode(body.mode),
+    // An unchecked checkbox isn't submitted at all.
+    clientEffortOverrides: body.clientEffortOverrides !== undefined,
+    targets: parseTargetRows(body),
+  };
+}
+
+async function saveAlias(c: Context, mode: "add" | "edit", id?: number) {
+  const form = await readAliasForm(c, mode, id);
+  const { models, modelsUnreachable } = await pickableModels();
+  const existing = id === undefined ? undefined : listAliases().find((a) => a.id === id);
+  if (mode === "edit" && !existing) return c.text("Unknown alias", 404);
+
+  const rerender = (error: string) => c.html(Aliases({ aliases: listAliases(), models, modelsUnreachable, error, form }) as string, 400);
+  const checked = validateAliasForm(form, models, existing);
+  if ("error" in checked) return rerender(checked.error);
+
+  const options = { clientEffortOverrides: form.clientEffortOverrides };
   try {
-    createAlias(name, mode, targets, { clientEffortOverrides });
+    if (existing) updateAlias(existing.id, form.name, form.aliasMode, checked.targets, options);
+    else createAlias(form.name, form.aliasMode, checked.targets, options);
   } catch (err) {
-    const message = err instanceof Error && /unique/i.test(err.message) ? `Alias "${name}" already exists` : "Failed to create alias";
-    return rerender(message);
+    return rerender(err instanceof Error && /unique/i.test(err.message) ? `Alias "${form.name}" already exists` : "Failed to save alias");
   }
-
   return c.redirect("/admin/aliases", 302);
+}
+
+aliasesRouter.post("/aliases", (c) => saveAlias(c, "add"));
+
+aliasesRouter.post("/aliases/:id/edit", async (c) => {
+  const id = Number(c.req.param("id"));
+  return Number.isNaN(id) ? c.text("Unknown alias", 404) : saveAlias(c, "edit", id);
 });
 
 aliasesRouter.post("/aliases/:id/delete", (c) => {

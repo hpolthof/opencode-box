@@ -64,6 +64,26 @@ export function createAlias(
   })();
 }
 
+/** Replaces an alias's name, mode, options and targets. Throws on a duplicate name or no targets; false when the id is unknown. */
+export function updateAlias(
+  id: number,
+  alias: string,
+  mode: ModelAliasMode,
+  targets: ModelAliasTarget[],
+  options: { clientEffortOverrides?: boolean } = {}
+): boolean {
+  if (targets.length === 0) throw new Error("An alias needs at least one target model");
+  return db.transaction(() => {
+    const result = db
+      .query("UPDATE model_aliases SET alias = ?, mode = ?, client_effort_overrides = ? WHERE id = ?")
+      .run(alias, mode, options.clientEffortOverrides ? 1 : 0, id);
+    if (result.changes === 0) return false;
+    db.query("DELETE FROM model_alias_targets WHERE alias_id = ?").run(id);
+    insertTargets(id, targets);
+    return true;
+  })();
+}
+
 export function listAliases(): ModelAliasRecord[] {
   const rows = db.query<AliasRow, []>("SELECT * FROM model_aliases ORDER BY alias ASC").all();
   return rows.map(rowToRecord);
