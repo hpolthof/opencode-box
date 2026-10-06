@@ -187,7 +187,7 @@ runs at its lowest level.
 - **Playground** - try any model, streaming or not, with an optional JSON schema.
 - **Keys** - create and revoke API keys, optionally restricted to certain models/aliases.
 - **Requests** - request log (model, reasoning level, status, latency, tokens, cost).
-- **Providers** - connect providers with an API key or a subscription sign-in.
+- **Providers** - connect providers with an API key or a subscription sign-in, or add any number of custom OpenAI-compatible endpoints (base URL, optional API key, model IDs; models are addressed as `<id>/<model>`).
 - **Models** - every model the connected providers offer, with pricing.
 - **Aliases** - see above.
 - **Maintenance** - keeps the gateway's own SQLite database from growing unbounded: purge request

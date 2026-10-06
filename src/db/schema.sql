@@ -80,3 +80,16 @@ CREATE TABLE IF NOT EXISTS pi_credentials (
   credential  TEXT NOT NULL,
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- User-defined OpenAI-compatible endpoints (Admin > Providers). Each row is
+-- registered as its own pi-ai provider with id `id`, so its models are
+-- addressed as "<id>/<model>". `models` is a JSON array of model ids;
+-- `api_key` is optional (keyless local servers).
+CREATE TABLE IF NOT EXISTS custom_providers (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  base_url   TEXT NOT NULL,
+  api_key    TEXT,
+  models     TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

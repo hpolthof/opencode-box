@@ -3,7 +3,9 @@ import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { OPENAI_CODEX_MODELS } from "@earendil-works/pi-ai/providers/openai-codex.models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { deleteCustomProvider, getCustomProvider, insertCustomProvider, listCustomProviders, updateCustomProvider, type CustomModelSpec, type CustomProviderRecord } from "../db/customProviders";
 import { SqliteCredentialStore } from "../db/piCredentials";
+import { buildCustomProvider, CustomProviderError } from "./customProviders";
 
 /**
  * The gateway's model backend: providers called in-process through pi-ai
@@ -29,8 +31,29 @@ export function getPiModels(): MutableModels {
     models.setProvider(openaiProvider());
     models.setProvider(anthropicProvider());
     models.setProvider(openrouterProvider());
+    for (const record of listCustomProviders()) models.setProvider(buildCustomProvider(record));
   }
   return models;
+}
+
+/** Adds a custom OpenAI-compatible provider (its id must be new) and registers it right away. */
+export function addCustomProvider(record: CustomProviderRecord): void {
+  if (getPiModels().getProvider(record.id)) throw new CustomProviderError(`A provider with ID "${record.id}" already exists.`);
+  insertCustomProvider(record);
+  getPiModels().setProvider(buildCustomProvider(record));
+}
+
+/** Replaces an existing custom provider's settings (the id is fixed). */
+export function editCustomProvider(record: CustomProviderRecord): void {
+  if (!getCustomProvider(record.id)) throw new CustomProviderError(`No custom provider "${record.id}".`);
+  updateCustomProvider(record);
+  getPiModels().setProvider(buildCustomProvider(record));
+}
+
+export function removeCustomProvider(id: string): void {
+  if (!getCustomProvider(id)) return;
+  deleteCustomProvider(id);
+  getPiModels().deleteProvider(id);
 }
 
 /** Test hook: swap in a Models collection wired to fake providers. */
@@ -124,16 +147,21 @@ export interface PiProviderStatus {
   authType: "api_key" | "oauth" | null;
   /** True when a credential is stored in the database (i.e. something to sign out of). */
   hasStoredCredential: boolean;
+  /** Set for user-defined OpenAI-compatible endpoints. */
+  custom?: { baseUrl: string; models: CustomModelSpec[]; hasKey: boolean };
 }
 
 export async function listPiProviders(): Promise<PiProviderStatus[]> {
   const piModels = getPiModels();
+  const customById = new Map(listCustomProviders().map((p) => [p.id, p]));
   const stored = new Set((await credentialStore?.list())?.map((c) => c.providerId) ?? []);
   return Promise.all(
     piModels.getProviders().map(async (provider) => {
       const check = await piModels.checkAuth(provider.id).catch(() => undefined);
       const oauth = provider.auth.oauth;
+      const custom = customById.get(provider.id);
       return {
+        ...(custom ? { custom: { baseUrl: custom.baseUrl, models: custom.models, hasKey: custom.apiKey !== null } } : {}),
         id: provider.id,
         name: provider.name,
         oauthLabel: oauth ? oauth.loginLabel ?? oauth.name : null,
