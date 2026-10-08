@@ -3,6 +3,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { apiKeyAuth, getApiKey, type ApiKeyAuthEnv } from "../auth/apiKeyAuth";
 import { listCatalogModels, type ModelSummary } from "../catalog";
 import { findAliasByName, listAliases } from "../db/modelAliases";
+import { finishActiveRequest, startActiveRequest, updateActiveRequest } from "../activeRequests";
 import { insertRequestLog } from "../db/requests";
 import { piMessageToResponseObject, responsesFormat, responsesInputToMessages } from "../openai/responsesTranslate";
 import { createResponsesStream } from "../openai/responsesStream";
@@ -31,6 +32,21 @@ interface PendingLog {
   notes?: string | null;
   stream: boolean;
   requestBody: string | null;
+  /** Id in the in-flight registry (see activeRequests.ts); cleared when the request is logged. */
+  activeId?: number;
+}
+
+/** Registers the request as in flight; it is removed again by `logOk`/`logError`. */
+function trackActive(pending: PendingLog, endpoint: string): void {
+  pending.activeId = startActiveRequest({
+    endpoint,
+    appName: pending.appName,
+    requestedModel: pending.model,
+    variant: pending.variant,
+    alias: pending.alias ?? null,
+    stream: pending.stream,
+    requestBytes: pending.requestBody?.length ?? 0,
+  });
 }
 
 type TokenFields = "promptTokens" | "completionTokens" | "totalTokens" | "reasoningTokens" | "cacheReadTokens" | "cacheWriteTokens";
@@ -56,6 +72,7 @@ function logOk(
   responseBody: string,
   usage?: TokenUsage | null
 ) {
+  finishActiveRequest(pending.activeId);
   insertRequestLog({
     ...baseLog(pending, start),
     status: "ok",
@@ -72,6 +89,7 @@ function logOk(
 }
 
 function logError(pending: PendingLog, start: number, httpStatus: number, errorMessage: string, responseBody: string | null = null) {
+  finishActiveRequest(pending.activeId);
   insertRequestLog({
     ...baseLog(pending, start),
     status: "error",
@@ -427,6 +445,7 @@ function commitServed(
     notes.push(`not forwarded: ${droppedParams.join(", ")}`);
   }
   pending.notes = notes.length > 0 ? notes.join("; ") : null;
+  updateActiveRequest(pending.activeId, { servedModel: pending.model, variant: pending.variant });
 }
 
 v1Router.post("/chat/completions", async (c) => {
@@ -444,6 +463,7 @@ v1Router.post("/chat/completions", async (c) => {
     stream: Boolean(body?.stream),
     requestBody: rawBody,
   };
+  trackActive(pending, "/v1/chat/completions");
 
   if (!body || typeof body.model !== "string" || !Array.isArray(body.messages)) {
     const message = "Request must include a string `model` and an array `messages`";
@@ -464,6 +484,7 @@ v1Router.post("/chat/completions", async (c) => {
   // reasoning level is known up front - log it even if the call fails.
   pending.alias = resolution.alias;
   if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
+  updateActiveRequest(pending.activeId, { alias: pending.alias, variant: pending.variant });
 
   const request: PiRunRequest = {
     messages: body.messages,
@@ -505,6 +526,7 @@ v1Router.post("/responses", async (c) => {
     stream: Boolean(body?.stream),
     requestBody: rawBody,
   };
+  trackActive(pending, "/v1/responses");
 
   const hasInput = typeof body?.input === "string" ? body.input.length > 0 : Array.isArray(body?.input);
   if (!body || typeof body.model !== "string" || !hasInput) {
@@ -536,6 +558,7 @@ v1Router.post("/responses", async (c) => {
   }
   pending.alias = resolution.alias;
   if (resolution.targets.length === 1) pending.variant = resolution.targets[0].variant ?? null;
+  updateActiveRequest(pending.activeId, { alias: pending.alias, variant: pending.variant });
 
   const instructions = typeof body.instructions === "string" ? body.instructions : null;
   const request: PiRunRequest = {

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { listActiveRequests } from "../../activeRequests";
 import { queryRequests } from "../../db/requests";
 import { listModelRates } from "../../catalog";
 import { estimateCost, resolveModelRate } from "../../pricing";
@@ -7,6 +8,8 @@ import { RequestsLog } from "../../views/requestsLog";
 export const requestsLogRouter = new Hono();
 
 const PAGE_SIZE = 50;
+
+requestsLogRouter.get("/requests/active", (c) => c.json({ requests: listActiveRequests() }));
 
 requestsLogRouter.get("/requests", async (c) => {
   const model = c.req.query("model")?.trim() || undefined;

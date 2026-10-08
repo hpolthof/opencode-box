@@ -43,6 +43,74 @@ function tokensPerSecond(completionTokens: number | null, latencyMs: number): st
   return (completionTokens / (latencyMs / 1000)).toFixed(1);
 }
 
+const ACTIVE_SCRIPT = `
+(function () {
+  var section = document.getElementById("active-requests");
+  if (!section) return;
+  var body = section.querySelector("tbody");
+  var count = section.querySelector(".active-count");
+  var current = [];
+
+  function cell(text, cls) {
+    var td = document.createElement("td");
+    if (cls) td.className = cls;
+    td.textContent = text;
+    return td;
+  }
+
+  function elapsed(startedAt) {
+    var s = Math.max(0, (Date.now() - Date.parse(startedAt)) / 1000);
+    return s < 60 ? s.toFixed(1) + " s" : Math.floor(s / 60) + "m " + Math.floor(s % 60) + "s";
+  }
+
+  function render() {
+    section.hidden = current.length === 0;
+    count.textContent = current.length;
+    body.textContent = "";
+    current.forEach(function (r) {
+      var tr = document.createElement("tr");
+      tr.appendChild(cell(r.appName));
+      var model = cell(r.servedModel || r.requestedModel, "mono");
+      if (r.alias || (r.servedModel && r.servedModel !== r.requestedModel)) {
+        var via = document.createElement("div");
+        via.className = "muted";
+        via.textContent = "via " + (r.alias || r.requestedModel);
+        model.appendChild(via);
+      }
+      tr.appendChild(model);
+      tr.appendChild(cell(r.variant || "-", "mono"));
+      tr.appendChild(cell(r.endpoint, "mono"));
+      tr.appendChild(cell(r.stream ? "yes" : "no"));
+      tr.appendChild(cell(r.servedModel ? (r.stream ? "streaming" : "generating") : "connecting"));
+      tr.appendChild(cell((r.requestBytes / 1024).toFixed(1) + " KB", "mono"));
+      var t = cell(elapsed(r.startedAt), "mono");
+      t.setAttribute("data-started", r.startedAt);
+      tr.appendChild(t);
+      body.appendChild(tr);
+    });
+  }
+
+  function poll() {
+    fetch("/admin/requests/active", { headers: { Accept: "application/json" } })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        current = data.requests;
+        render();
+      })
+      .catch(function () {});
+  }
+
+  setInterval(function () {
+    Array.prototype.forEach.call(body.querySelectorAll("[data-started]"), function (el) {
+      el.textContent = elapsed(el.getAttribute("data-started"));
+    });
+  }, 500);
+  setInterval(function () { if (!document.hidden) poll(); }, 2000);
+  poll();
+})();
+`;
+
 const SCRIPT = `
 (function () {
   var table = document.getElementById("requests-table");
@@ -397,6 +465,27 @@ export const RequestsLog: FC<RequestsLogProps> = ({ rows, total, pageSize, filte
         <button type="submit">Filter</button>
       </form>
 
+      <div id="active-requests" class="table-card" hidden>
+        <p class="muted" style="margin: 12px 16px 0">
+          <strong>In flight</strong> · <span class="active-count">0</span> request(s) running now
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>App</th>
+              <th>Model</th>
+              <th>Variant</th>
+              <th>Endpoint</th>
+              <th>Stream</th>
+              <th>Phase</th>
+              <th>Request size</th>
+              <th>Running</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
       <p class="muted">
         {total} total request{total === 1 ? "" : "s"} · page {filters.page} of {totalPages}
         {totalCost !== null && (
@@ -597,6 +686,7 @@ export const RequestsLog: FC<RequestsLogProps> = ({ rows, total, pageSize, filte
       </div>
 
       <script dangerouslySetInnerHTML={{ __html: SCRIPT }}></script>
+      <script dangerouslySetInnerHTML={{ __html: ACTIVE_SCRIPT }}></script>
     </Layout>
   );
 };
