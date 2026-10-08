@@ -146,6 +146,69 @@ Every successful response says what actually served it, without changing the Ope
 The request log (Admin > Requests) records the same: the serving model and level, the alias, and a
 note for failover, an ignored effort or dropped parameters.
 
+## Request logs via MCP
+
+Connect an MCP client to `http://<host>:8080/mcp` using **Streamable HTTP** and
+the header `Authorization: Bearer <your-api-key>`. Use the same gateway API key
+as for `/v1` requests. Every MCP call authenticates the key again; revoked keys
+lose access immediately. No separate MCP key or admin login is needed.
+
+The server follows the [official SDK's Hono transport pattern](https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.x/src/examples/server/honoWebStandardStreamableHttp.ts)
+and uses stateless JSON responses. Clients initialize normally, then use POST for
+MCP calls; no session ID is required. Standalone GET event streams and DELETE
+session requests return 405. Native clients can omit `Origin`; browser requests
+must use the server's own origin.
+
+Only request logs belonging to the authenticated key are accessible, including
+list results and counts. Requests made with another key (even one with the same
+name), admin playground requests, and logs whose key was deleted are inaccessible.
+An inaccessible request ID returns the same `Request not found.` tool error as an
+unknown ID.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `list_requests` | Optional `from`, `to`, `model`, `appName`, `status`, `page`, `pageSize` | `requests` with metadata, `total`, `page`, `pageSize`, `hasMore`. |
+| `get_request` | `requestId` (positive integer) | All stored request metadata and body availability, without bodies. |
+| `get_request_bodies` | `requestId` (positive integer) | `id`, `requestBody`, `responseBody`; bodies are raw strings or `null`. |
+
+`list_requests` returns newest requests first. `from` and `to` filter the log's
+`createdAt` timestamp and include both boundaries. Supply ISO 8601 timestamps
+with `Z` or an explicit timezone offset; offsets are normalized to UTC. Either
+boundary may be omitted, and `from` must not be later than `to`. Other filters
+match exactly; `status` is `ok` or `error`. `page` defaults to 1 and `pageSize`
+defaults to 50 (maximum 100).
+
+For example, this MCP tool call lists requests between two times:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "list_requests",
+    "arguments": {
+      "from": "2026-10-08T10:00:00+02:00",
+      "to": "2026-10-08T12:00:00+02:00",
+      "page": 1,
+      "pageSize": 50
+    }
+  }
+}
+```
+
+To inspect a returned ID, call `get_request` with `{"requestId": 123}`, then
+`get_request_bodies` with the same arguments to fetch its payloads separately.
+Metadata includes model, reasoning level, alias, notes, streaming flag, HTTP
+status, token usage, latency, error message, creation time, and
+`requestBodyAvailable` / `responseBodyAvailable`.
+
+A body is `null` when it was not recorded or has been cleared by retention or a
+soft purge. The existing log storage limit of 1,000,000 characters per body
+applies; longer bodies end with `...[truncated]`. Streaming responses use the
+gateway's stored response representation. MCP exposes recorded logs; a request
+appears once the gateway writes its log entry.
+
 ## Structured output
 
 `response_format: {"type": "json_schema", "json_schema": {...}}` (chat) or `text.format` (responses)

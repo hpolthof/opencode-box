@@ -97,6 +97,83 @@ export interface RequestFilters {
   pageSize?: number;
 }
 
+export type RequestLogDetails = Omit<RequestLogRow, "requestBody" | "responseBody"> & {
+  requestBodyAvailable: boolean;
+  responseBodyAvailable: boolean;
+};
+
+// Keep bodies out of metadata queries: individual bodies can be up to 1 MB.
+const DETAILS_COLUMNS = `id, api_key_id, app_name, model, variant, alias, notes,
+  stream, status, http_status, prompt_tokens, completion_tokens, total_tokens,
+  reasoning_tokens, cache_read_tokens, cache_write_tokens, latency_ms,
+  error_message, created_at, NULL AS request_body, NULL AS response_body,
+  request_body IS NOT NULL AS request_body_available,
+  response_body IS NOT NULL AS response_body_available`;
+
+type DetailsRow = RequestRow & { request_body_available: number; response_body_available: number };
+
+function rowToDetails(row: DetailsRow): RequestLogDetails {
+  const { requestBody, responseBody, ...details } = rowToEntry(row);
+  return {
+    ...details,
+    requestBodyAvailable: Boolean(row.request_body_available),
+    responseBodyAvailable: Boolean(row.response_body_available),
+  };
+}
+
+/** Key ownership is mandatory and separate from client-controlled filters. */
+export function queryRequestsForKey(apiKeyId: number, filters: RequestFilters & { from?: string; to?: string } = {}): {
+  rows: RequestLogDetails[];
+  total: number;
+} {
+  const pageSize = filters.pageSize ?? 50;
+  const page = filters.page ?? 1;
+  const conditions = ["api_key_id = ?"];
+  const params: (string | number)[] = [apiKeyId];
+  for (const [column, value] of [
+    ["model", filters.model], ["app_name", filters.appName], ["status", filters.status],
+  ] as const) {
+    if (value !== undefined) {
+      conditions.push(`${column} = ?`);
+      params.push(value);
+    }
+  }
+  if (filters.from !== undefined) {
+    conditions.push("created_at >= ?");
+    params.push(filters.from);
+  }
+  if (filters.to !== undefined) {
+    conditions.push("created_at <= ?");
+    params.push(filters.to);
+  }
+  const where = `WHERE ${conditions.join(" AND ")}`;
+  const rows = db.query<DetailsRow, (string | number)[]>(
+    `SELECT ${DETAILS_COLUMNS} FROM requests ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+  ).all(...params, pageSize, (page - 1) * pageSize);
+  const total = db.query<{ count: number }, (string | number)[]>(
+    `SELECT COUNT(*) AS count FROM requests ${where}`
+  ).get(...params)?.count ?? 0;
+  return { rows: rows.map(rowToDetails), total };
+}
+
+export function getRequestDetailsForKey(apiKeyId: number, requestId: number): RequestLogDetails | null {
+  const row = db.query<DetailsRow, [number, number]>(
+    `SELECT ${DETAILS_COLUMNS} FROM requests WHERE api_key_id = ? AND id = ?`
+  ).get(apiKeyId, requestId);
+  return row ? rowToDetails(row) : null;
+}
+
+export function getRequestBodiesForKey(apiKeyId: number, requestId: number): {
+  id: number;
+  requestBody: string | null;
+  responseBody: string | null;
+} | null {
+  return db.query<{ id: number; requestBody: string | null; responseBody: string | null }, [number, number]>(
+    `SELECT id, request_body AS requestBody, response_body AS responseBody
+     FROM requests WHERE api_key_id = ? AND id = ?`
+  ).get(apiKeyId, requestId);
+}
+
 export function queryRequests(filters: RequestFilters = {}): { rows: RequestLogRow[]; total: number } {
   const pageSize = filters.pageSize ?? 50;
   const page = filters.page ?? 1;
