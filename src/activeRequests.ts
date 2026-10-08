@@ -10,7 +10,11 @@ export interface ActiveRequest {
   appName: string;
   /** What the client asked for (alias or provider/model). */
   requestedModel: string;
-  /** The concrete provider/model once a target has been committed to, else null. */
+  /**
+   * The concrete provider/model: for a stream once a target has been
+   * committed to, for a non-streaming request the target being tried. Null
+   * before that.
+   */
   servedModel: string | null;
   variant: string | null;
   alias: string | null;

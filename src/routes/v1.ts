@@ -289,13 +289,15 @@ const FAILOVER_TIMEOUT_MS = 120_000;
  */
 async function completeWithFailover(
   targets: ResolvedTarget[],
-  request: PiRunRequest
+  request: PiRunRequest,
+  onAttempt: (target: ResolvedTarget) => void
 ): Promise<
   | { ok: true; target: ResolvedTarget; targetIndex: number; message: AssistantMessage; droppedParams: string[] }
   | { ok: false; error: TargetError }
 > {
   let lastError = gatewayError("No target model available");
   for (const [targetIndex, target] of targets.entries()) {
+    onAttempt(target);
     const attempt = await piComplete(target, request, FAILOVER_TIMEOUT_MS);
     if (attempt.ok) return { ok: true, target, targetIndex, message: attempt.message, droppedParams: attempt.droppedParams };
     lastError = attempt.error;
@@ -448,6 +450,15 @@ function commitServed(
   updateActiveRequest(pending.activeId, { servedModel: pending.model, variant: pending.variant });
 }
 
+/**
+ * Shows the target a non-streaming request is waiting on in the in-flight
+ * list: such a request has no first-token moment, so without this it would
+ * read "connecting" until the whole answer is in (and then be gone).
+ */
+function trackAttempt(pending: PendingLog, target: ResolvedTarget): void {
+  updateActiveRequest(pending.activeId, { servedModel: `${target.providerID}/${target.modelID}`, variant: target.variant ?? null });
+}
+
 v1Router.post("/chat/completions", async (c) => {
   const start = Date.now();
   const apiKey = getApiKey(c);
@@ -493,7 +504,7 @@ v1Router.post("/chat/completions", async (c) => {
   };
 
   if (!body.stream) {
-    const result = await completeWithFailover(resolution.targets, request);
+    const result = await completeWithFailover(resolution.targets, request, (target) => trackAttempt(pending, target));
     if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
     commitServed(c, pending, resolution, result);
     const response = piMessageToOpenAIResponse(body.model, result.message);
@@ -569,7 +580,7 @@ v1Router.post("/responses", async (c) => {
   const responseId = `resp_${crypto.randomUUID().replace(/-/g, "")}`;
 
   if (!body.stream) {
-    const result = await completeWithFailover(resolution.targets, request);
+    const result = await completeWithFailover(resolution.targets, request, (target) => trackAttempt(pending, target));
     if (!result.ok) return targetErrorResponse(c, pending, start, rawBody, result.error);
     commitServed(c, pending, resolution, result);
     const response = piMessageToResponseObject({ id: responseId, model: body.model, instructions, message: result.message });
